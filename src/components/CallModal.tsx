@@ -36,19 +36,22 @@ const CallModal: React.FC<CallModalProps> = ({
 
   // Обновляем состояние звонка
   useEffect(() => {
-    const handleCallStarted = (state: CallState) => {
-      setCallState(state);
+    const handleCallStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       startCallTimer();
     };
     
-    const handleCallEnded = (state: CallState) => {
-      setCallState(state);
+    const handleCallEnded = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       stopCallTimer();
       setTimeout(onClose, 1000); // Закрываем модальное окно через 1 секунду
     };
     
-    const handleConnectionStateChanged = (state: CallState) => {
-      setCallState(state);
+    const handleConnectionStateChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
     };
     
     // Подписываемся на события
@@ -156,7 +159,6 @@ const CallModal: React.FC<CallModalProps> = ({
     }, 1000);
   };
 
-  // Останавливаем таймер
   const stopCallTimer = () => {
     if (durationTimerRef.current) {
       clearInterval(durationTimerRef.current);
@@ -164,14 +166,12 @@ const CallModal: React.FC<CallModalProps> = ({
     }
   };
 
-  // Форматируем длительность звонка в формат MM:SS
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Получаем текущий статус звонка
   const getCallStatus = (): string => {
     if (!callState.isInCall) return isIncoming ? "Входящий звонок..." : "Вызов...";
     

@@ -1,4 +1,3 @@
-
 import { useState } from 'react';
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,9 +23,10 @@ interface TaskNodeProps {
   isSelected: boolean;
   onUpdate: (updatedTask: Partial<Task> & { id: string }) => void;
   onPositionChange?: (taskId: string, x: number, y: number) => void;
+  containerBounds?: { width: number; height: number };
 }
 
-const TaskNode = ({ task, onClick, isSelected, onUpdate, onPositionChange }: TaskNodeProps) => {
+const TaskNode = ({ task, onClick, isSelected, onUpdate, onPositionChange, containerBounds }: TaskNodeProps) => {
   const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
@@ -52,9 +52,22 @@ const TaskNode = ({ task, onClick, isSelected, onUpdate, onPositionChange }: Tas
       const newX = moveEvent.clientX - parentRect.left - dragStart.x;
       const newY = moveEvent.clientY - parentRect.top - dragStart.y;
       
-      // Constrain to parent bounds with some padding
-      const constrainedX = Math.max(112, Math.min(newX, window.innerWidth - 350)); // 112px = half node width
-      const constrainedY = Math.max(50, Math.min(newY, window.innerHeight - 200)); // 50px top padding
+      // Define container bounds with proper padding
+      const nodeWidth = 224; // w-56 = 224px
+      const nodeHeight = 120; // approximate node height
+      const padding = 20;
+      
+      const bounds = containerBounds || { width: 800, height: 600 };
+      
+      // Constrain to container bounds
+      const constrainedX = Math.max(
+        nodeWidth / 2 + padding, 
+        Math.min(newX, bounds.width - nodeWidth / 2 - padding)
+      );
+      const constrainedY = Math.max(
+        nodeHeight / 2 + padding, 
+        Math.min(newY, bounds.height - nodeHeight / 2 - padding)
+      );
       
       if (onPositionChange) {
         onPositionChange(task.id, constrainedX, constrainedY);
@@ -70,9 +83,22 @@ const TaskNode = ({ task, onClick, isSelected, onUpdate, onPositionChange }: Tas
       const newX = upEvent.clientX - parentRect.left - dragStart.x;
       const newY = upEvent.clientY - parentRect.top - dragStart.y;
       
+      // Define container bounds with proper padding
+      const nodeWidth = 224;
+      const nodeHeight = 120;
+      const padding = 20;
+      
+      const bounds = containerBounds || { width: 800, height: 600 };
+      
       // Final position with constraints
-      const finalX = Math.max(112, Math.min(newX, window.innerWidth - 350));
-      const finalY = Math.max(50, Math.min(newY, window.innerHeight - 200));
+      const finalX = Math.max(
+        nodeWidth / 2 + padding, 
+        Math.min(newX, bounds.width - nodeWidth / 2 - padding)
+      );
+      const finalY = Math.max(
+        nodeHeight / 2 + padding, 
+        Math.min(newY, bounds.height - nodeHeight / 2 - padding)
+      );
       
       onUpdate({
         id: task.id,

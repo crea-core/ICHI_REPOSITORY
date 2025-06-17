@@ -24,11 +24,12 @@ const IncomingCallNotification: React.FC = () => {
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const [callerProfile, setCallerProfile] = useState<CallerProfile | null>(null);
   const [isVisible, setIsVisible] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const callService = useCallService();
 
   useEffect(() => {
-    // Слушаем событие входящего звонка
     const handleIncomingCall = (event: CustomEvent) => {
+      console.log('Обработка входящего звонка:', event.detail);
       const { fromUserId, offer } = event.detail;
       setIncomingCall({ fromUserId, offer });
       fetchCallerProfile(fromUserId);
@@ -42,15 +43,33 @@ const IncomingCallNotification: React.FC = () => {
     };
   }, []);
 
+  // Автоматическое скрытие уведомления через 30 секунд
+  useEffect(() => {
+    if (isVisible && incomingCall) {
+      const timeout = setTimeout(() => {
+        console.log('Автоматическое отклонение звонка по таймауту');
+        rejectCall();
+      }, 30000);
+
+      return () => clearTimeout(timeout);
+    }
+  }, [isVisible, incomingCall]);
+
   const fetchCallerProfile = async (userId: string) => {
     try {
+      console.log('Загрузка профиля звонящего:', userId);
       const { data, error } = await supabase
         .from('profiles')
         .select('id, full_name, username, avatar_url')
         .eq('id', userId)
         .single();
         
-      if (error) throw error;
+      if (error) {
+        console.error('Ошибка загрузки профиля:', error);
+        return;
+      }
+      
+      console.log('Профиль загружен:', data);
       setCallerProfile(data);
     } catch (error) {
       console.error('Ошибка загрузки профиля звонящего:', error);
@@ -58,9 +77,13 @@ const IncomingCallNotification: React.FC = () => {
   };
 
   const acceptCall = async () => {
-    if (!incomingCall || !callerProfile) return;
+    if (!incomingCall || !callerProfile || isProcessing) return;
+    
+    setIsProcessing(true);
     
     try {
+      console.log('Принятие звонка от:', callerProfile.full_name || callerProfile.username);
+      
       await callService.answerCall(incomingCall.fromUserId, incomingCall.offer, true);
       
       // Открываем окно звонка
@@ -76,22 +99,28 @@ const IncomingCallNotification: React.FC = () => {
       closeNotification();
     } catch (error) {
       console.error('Ошибка принятия звонка:', error);
+      setIsProcessing(false);
     }
   };
 
   const rejectCall = async () => {
-    if (!incomingCall) return;
+    if (!incomingCall || isProcessing) return;
+    
+    setIsProcessing(true);
     
     try {
+      console.log('Отклонение звонка от:', incomingCall.fromUserId);
       await callService.answerCall(incomingCall.fromUserId, incomingCall.offer, false);
       closeNotification();
     } catch (error) {
       console.error('Ошибка отклонения звонка:', error);
+      setIsProcessing(false);
     }
   };
 
   const closeNotification = () => {
     setIsVisible(false);
+    setIsProcessing(false);
     setTimeout(() => {
       setIncomingCall(null);
       setCallerProfile(null);
@@ -147,6 +176,7 @@ const IncomingCallNotification: React.FC = () => {
                   size="icon"
                   className="rounded-full w-12 h-12"
                   onClick={rejectCall}
+                  disabled={isProcessing}
                 >
                   <PhoneOff className="h-5 w-5" />
                 </Button>
@@ -163,11 +193,19 @@ const IncomingCallNotification: React.FC = () => {
                   size="icon"
                   className="rounded-full w-12 h-12 bg-green-500 hover:bg-green-600"
                   onClick={acceptCall}
+                  disabled={isProcessing}
                 >
                   <Phone className="h-5 w-5" />
                 </Button>
               </motion.div>
             </div>
+            
+            {isProcessing && (
+              <div className="mt-3 text-center">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[#33C3F0] mx-auto"></div>
+                <p className="text-xs text-gray-500 mt-1">Обработка...</p>
+              </div>
+            )}
           </Card>
         </motion.div>
       )}

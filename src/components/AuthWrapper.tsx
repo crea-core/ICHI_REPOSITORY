@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import { Session } from "@supabase/supabase-js";
+import { useTranslation } from "@/components/language-provider";
 
 interface AuthWrapperProps {
   children: React.ReactNode;
@@ -29,6 +30,7 @@ const AuthWrapper = ({ children }: AuthWrapperProps) => {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   useEffect(() => {
     // Set up auth state listener FIRST
@@ -63,7 +65,7 @@ const AuthWrapper = ({ children }: AuthWrapperProps) => {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-t-[#33C3F0] border-b-[#33C3F0] border-l-transparent border-r-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="mt-4 text-lg">Загрузка...</p>
+          <p className="mt-4 text-lg">{t("loading")}</p>
         </div>
       </div>
     );

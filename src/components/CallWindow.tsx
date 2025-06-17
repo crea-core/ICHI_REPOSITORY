@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,15 +37,17 @@ const CallWindow: React.FC<CallWindowProps> = ({
   useEffect(() => {
     setCallState(callService.getState());
     
-    const handleCallStarted = (state: CallState) => {
-      setCallState(state);
-      if (state.connectionState === 'connected') {
+    const handleCallStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
+      if (customEvent.detail.connectionState === 'connected') {
         startCallTimer();
       }
     };
     
-    const handleCallEnded = (state: CallState) => {
-      setCallState(state);
+    const handleCallEnded = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       stopCallTimer();
       setTimeout(onClose, 1000);
     };
