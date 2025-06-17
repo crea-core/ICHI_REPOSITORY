@@ -35,7 +35,7 @@ class CallService extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       // Замените YOUR_PROJECT_ID на реальный ID проекта Supabase
-      const wsUrl = `wss://YOUR_PROJECT_ID.functions.supabase.co/voice-call?userId=${this.userId}`;
+      const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/voice-call?userId=${this.userId}`;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
