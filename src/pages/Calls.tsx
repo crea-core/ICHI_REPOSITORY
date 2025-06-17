@@ -43,20 +43,23 @@ const Calls = () => {
 
   // Обновляем состояние звонка
   useEffect(() => {
-    const handleCallStarted = (state: CallState) => {
-      setCallState(state);
+    const handleCallStarted = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       setCallStatus("calling");
     };
     
-    const handleCallAccepted = (state: CallState) => {
-      setCallState(state);
+    const handleCallAccepted = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       setCallStatus("connected");
       startCallTimer();
       toast.success("Звонок подключен");
     };
     
-    const handleCallEnded = (state: CallState) => {
-      setCallState(state);
+    const handleCallEnded = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
       setCallStatus("ended");
       stopCallTimer();
       toast.info("Звонок завершен");

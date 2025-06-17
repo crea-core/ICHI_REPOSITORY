@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -37,6 +38,8 @@ const Chat = () => {
   const navigate = useNavigate();
   const { contactId } = useParams<{ contactId: string }>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastMessageCountRef = useRef<number>(0);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const fetchCurrentUser = async () => {
@@ -178,96 +181,72 @@ const Chat = () => {
     setActiveContactFromUrl();
   }, [contactId, currentUserId, contacts]);
 
-  useEffect(() => {
-    const fetchMessages = async () => {
-      if (!activeContact || !currentUserId) {
-        setMessages([]);
+  const fetchMessages = useCallback(async () => {
+    if (!activeContact || !currentUserId) {
+      setMessages([]);
+      return;
+    }
+
+    try {
+      console.log("Fetching messages between:", currentUserId, "and", activeContact.id);
+      
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .or(
+          `and(user_id.eq.${currentUserId},receiver_id.eq.${activeContact.id}),and(user_id.eq.${activeContact.id},receiver_id.eq.${currentUserId})`
+        )
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error("Ошибка при получении сообщений:", error);
+        toast.error("Не удалось загрузить сообщения");
         return;
       }
 
-      try {
-        setLoadingMessages(true);
-        console.log("Fetching messages between:", currentUserId, "and", activeContact.id);
-        
-        const { data, error } = await supabase
-          .from("messages")
-          .select("*")
-          .or(
-            `and(user_id.eq.${currentUserId},receiver_id.eq.${activeContact.id}),and(user_id.eq.${activeContact.id},receiver_id.eq.${currentUserId})`
-          )
-          .order("created_at", { ascending: true });
-
-        if (error) {
-          console.error("Ошибка при получении сообщений:", error);
-          toast.error("Не удалось загрузить сообщения");
-          return;
-        }
-
-        console.log("Fetched messages:", data);
-        if (data) {
+      console.log("Fetched messages:", data);
+      if (data) {
+        // Only update messages if the count has changed to prevent unnecessary re-renders
+        if (data.length !== lastMessageCountRef.current) {
           setMessages(data);
+          lastMessageCountRef.current = data.length;
         }
-      } catch (error) {
-        console.error("Ошибка при получении сообщений:", error);
-        toast.error("Не удалось загрузить сообщения");
-      } finally {
-        setLoadingMessages(false);
       }
-    };
-
-    fetchMessages();
+    } catch (error) {
+      console.error("Ошибка при получении сообщений:", error);
+      toast.error("Не удалось загрузить сообщения");
+    }
   }, [activeContact, currentUserId]);
 
   useEffect(() => {
-    if (!activeContact || !currentUserId) return;
+    setLoadingMessages(true);
+    fetchMessages().finally(() => setLoadingMessages(false));
+  }, [fetchMessages]);
 
-    console.log("Setting up real-time subscription for messages");
-    
-    let channel: any = null;
-    
-    try {
-      // Create channel with a unique name
-      channel = supabase
-        .channel(`messages_${currentUserId}_${activeContact.id}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'messages',
-          },
-          (payload) => {
-            console.log("New message received:", payload);
-            const newMessage = payload.new as Message;
-            
-            // Only add messages that are part of this conversation
-            if (
-              (newMessage.user_id === currentUserId && newMessage.receiver_id === activeContact.id) ||
-              (newMessage.user_id === activeContact.id && newMessage.receiver_id === currentUserId)
-            ) {
-              setMessages(prev => [...prev, newMessage]);
-            }
-          }
-        )
-        .subscribe((status) => {
-          console.log("Subscription status:", status);
-        });
-    } catch (error) {
-      console.error("Error setting up real-time subscription:", error);
-      // Continue without real-time if it fails
+  // Optimized polling - only poll when active contact exists
+  useEffect(() => {
+    if (!activeContact || !currentUserId) {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
     }
 
+    console.log("Setting up message polling for active contact:", activeContact.id);
+    
+    pollIntervalRef.current = setInterval(() => {
+      fetchMessages();
+    }, 3000); // Poll every 3 seconds
+
     return () => {
-      console.log("Cleaning up real-time subscription");
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch (error) {
-          console.error("Error removing channel:", error);
-        }
+      console.log("Cleaning up message polling");
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
     };
-  }, [activeContact, currentUserId]);
+  }, [activeContact, currentUserId, fetchMessages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -299,6 +278,9 @@ const Chat = () => {
         console.log("Message sent successfully:", data);
         setNewMessage("");
         
+        // Immediately fetch messages to show the new message
+        fetchMessages();
+        
       } catch (error) {
         console.error("Ошибка при отправке сообщения:", error);
         toast.error("Не удалось отправить сообщение");
@@ -307,6 +289,9 @@ const Chat = () => {
   };
 
   const initiateCall = (contact: Contact) => {
+    console.log("Initiating call to:", contact.name, contact.id);
+    
+    // Dispatch custom event to open call modal
     document.dispatchEvent(new CustomEvent('openCallModal', {
       detail: {
         contactId: contact.id,
@@ -315,6 +300,8 @@ const Chat = () => {
         isIncoming: false
       }
     }));
+    
+    toast.success(`Звоним ${contact.name}...`);
   };
 
   const handleContactAdded = (user: UserResult) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -41,6 +41,22 @@ const MindMap = () => {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerBounds, setContainerBounds] = useState({ width: 800, height: 600 });
+
+  useEffect(() => {
+    const updateContainerBounds = () => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        setContainerBounds({ width, height });
+      }
+    };
+
+    updateContainerBounds();
+    window.addEventListener('resize', updateContainerBounds);
+    
+    return () => window.removeEventListener('resize', updateContainerBounds);
+  }, []);
   
   useEffect(() => {
     const fetchUser = async () => {
@@ -100,7 +116,6 @@ const MindMap = () => {
     }
   }, [currentUserId, t]);
 
-  // Add test data function with media files
   const addTestData = async () => {
     if (!currentUserId) {
       toast.error('User not found');
@@ -460,7 +475,10 @@ const MindMap = () => {
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 dark:border-green-400"></div>
           </div>
         ) : (
-          <div className="relative h-[600px] border rounded-lg bg-background overflow-hidden">
+          <div 
+            ref={containerRef}
+            className="relative h-[600px] border rounded-lg bg-background overflow-hidden"
+          >
             {/* Task nodes */}
             {visibleTasks.map(task => (
               <TaskNode 
@@ -470,6 +488,7 @@ const MindMap = () => {
                 isSelected={selectedTask?.id === task.id}
                 onUpdate={handleTaskUpdate}
                 onPositionChange={handlePositionChange}
+                containerBounds={containerBounds}
               />
             ))}
             
