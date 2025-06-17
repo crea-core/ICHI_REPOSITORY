@@ -36,8 +36,6 @@ const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       fromUserId: string; 
       offer: RTCSessionDescriptionInit 
     }) => {
-      // Здесь должен быть запрос к API для получения данных контакта
-      // Для примера используем заглушку
       setCallData({
         contactId: data.fromUserId,
         contactName: `User ${data.fromUserId.slice(0, 5)}`,
