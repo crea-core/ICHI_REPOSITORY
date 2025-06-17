@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -5,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PhoneOff, Mic, MicOff, Minimize2, X } from "lucide-react";
 import { motion, AnimatePresence, useDragControls } from "framer-motion";
 import { useCallService, CallState } from "@/services/CallService";
+import { toast } from "sonner";
 
 interface CallWindowProps {
   isOpen: boolean;
@@ -40,34 +42,66 @@ const CallWindow: React.FC<CallWindowProps> = ({
     const handleCallStarted = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
       setCallState(customEvent.detail);
-      if (customEvent.detail.connectionState === 'connected') {
-        startCallTimer();
-      }
+      toast.info("Звонок инициирован...");
+    };
+    
+    const handleCallConnected = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
+      startCallTimer();
+      toast.success("Звонок подключен!");
+    };
+    
+    const handleCallAccepted = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
+      toast.success("Звонок принят");
     };
     
     const handleCallEnded = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
       setCallState(customEvent.detail);
       stopCallTimer();
+      toast.info("Звонок завершен");
+      setTimeout(onClose, 1000);
+    };
+    
+    const handleCallRejected = (event: Event) => {
+      toast.error("Звонок отклонен");
+      setTimeout(onClose, 1000);
+    };
+    
+    const handleCallFailed = (event: Event) => {
+      const customEvent = event as CustomEvent<{message: string}>;
+      toast.error(`Ошибка звонка: ${customEvent.detail.message}`);
       setTimeout(onClose, 1000);
     };
     
     callService.addEventListener('call_started', handleCallStarted);
-    callService.addEventListener('call_accepted', handleCallStarted);
+    callService.addEventListener('call_connected', handleCallConnected);
+    callService.addEventListener('call_accepted', handleCallAccepted);
     callService.addEventListener('call_ended', handleCallEnded);
-    callService.addEventListener('connection_state_changed', handleCallStarted);
+    callService.addEventListener('call_rejected', handleCallRejected);
+    callService.addEventListener('call_failed', handleCallFailed);
+    callService.addEventListener('connection_state_changed', (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      setCallState(customEvent.detail);
+    });
     
     return () => {
       callService.removeEventListener('call_started', handleCallStarted);
-      callService.removeEventListener('call_accepted', handleCallStarted);
+      callService.removeEventListener('call_connected', handleCallConnected);
+      callService.removeEventListener('call_accepted', handleCallAccepted);
       callService.removeEventListener('call_ended', handleCallEnded);
-      callService.removeEventListener('connection_state_changed', handleCallStarted);
+      callService.removeEventListener('call_rejected', handleCallRejected);
+      callService.removeEventListener('call_failed', handleCallFailed);
     };
   }, [onClose]);
 
   useEffect(() => {
     if (audioRef.current && callState?.remoteStream) {
       audioRef.current.srcObject = callState.remoteStream;
+      audioRef.current.play().catch(console.error);
     }
   }, [callState?.remoteStream]);
 
@@ -82,6 +116,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
       await callService.startCall(contactId);
     } catch (error) {
       console.error('Ошибка инициации звонка:', error);
+      toast.error('Не удалось начать звонок');
       onClose();
     }
   };
@@ -119,7 +154,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   };
 
   const endCall = () => {
-    callService.endCall();
+    callService.endCall(contactId);
   };
 
   const getCallStatus = (): string => {
