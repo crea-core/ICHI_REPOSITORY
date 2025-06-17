@@ -292,4 +292,3 @@ class CallService extends EventTarget {
 const callService = new CallService();
 export const useCallService = () => callService;
 export { CallService };
-}
