@@ -1,19 +1,19 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { PhoneOff, Phone, Mic, MicOff } from "lucide-react";
-import { callService, CallState } from "@/services/CallService";
+import { callService } from "@/services/CallService";
 import { toast } from "sonner";
 
 interface CallModalProps {
   isOpen: boolean;
-  contactId: string | null;
+  contactId: string;
   contactName: string;
   contactAvatar: string | null;
   isIncoming: boolean;
-  onClose: () => void;
   incomingCallOffer?: RTCSessionDescriptionInit;
+  onClose: () => void;
 }
 
 const CallModal: React.FC<CallModalProps> = ({
@@ -22,152 +22,96 @@ const CallModal: React.FC<CallModalProps> = ({
   contactName,
   contactAvatar,
   isIncoming,
-  onClose,
-  incomingCallOffer
+  incomingCallOffer,
+  onClose
 }) => {
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
-  const [callState, setCallState] = useState<CallState>(callService.getState());
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const durationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [callState, setCallState] = useState(callService.getState());
 
-  // Update call state when it changes
   useEffect(() => {
-    const handleStateChange = (state: CallState) => {
-      setCallState(state);
-      
-      if (state.callStatus === 'active') {
-        startCallTimer();
-      } else if (state.callStatus === 'ended') {
-        stopCallTimer();
-        setTimeout(onClose, 1000);
-      }
-    };
+    if (!isOpen) return;
 
-    callService.on('state_changed', handleStateChange);
-    return () => {
-      callService.off('state_changed', handleStateChange);
-    };
-  }, [onClose]);
+    const timer = setInterval(() => {
+      setCallDuration(prev => prev + 1);
+    }, 1000);
 
-  // Handle remote audio stream
+    return () => clearInterval(timer);
+  }, [isOpen]);
+
   useEffect(() => {
-    if (audioRef.current && callState.remoteStream) {
-      audioRef.current.srcObject = callState.remoteStream;
-    }
-  }, [callState.remoteStream]);
-
-  // Initiate call when modal opens for outgoing calls
-  useEffect(() => {
-    if (isOpen && contactId && !isIncoming && !callState.isInCall) {
-      initiateCall();
-    }
-  }, [isOpen, contactId, isIncoming, callState.isInCall]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (callState.isInCall) {
-        callService.endCall(contactId  undefined);
-      }
-      stopCallTimer();
-    };
-  }, [callState.isInCall, contactId]);
-
-  const initiateCall = async () => {
-    if (!contactId) return;
-    
-    try {
-      await callService.startCall(contactId);
-      toast.success(`Calling ${contactName}...`);
-    } catch (error) {
-      console.error('Call initiation failed:', error);
-      toast.error('Failed to start call');
-      onClose();
-    }
-  };
-
-  const answerCall = async (accept: boolean) => {
-    if (!contactId  !incomingCallOffer) return;
-    
-    try {
-      await callService.answerCall(contactId, incomingCallOffer, accept);
-      
-      if (accept) {
-        toast.success(Call with ${contactName} started);
-      } else {
-        toast.info(Call from ${contactName} declined);
+    if (!isIncoming && isOpen) {
+      callService.startCall(contactId).catch(error => {
+        toast.error('Failed to start call');
         onClose();
-      }
-    } catch (error) {
-      console.error('Error answering call:', error);
-      toast.error('Failed to answer call');
-      onClose();
+      });
     }
+  }, [isOpen, isIncoming, contactId, onClose]);
+
+  useEffect(() => {
+    const updateState = () => setCallState(callService.getState());
+    
+    callService.on('state_changed', updateState);
+    return () => {
+      callService.off('state_changed', updateState);
+    };
+  }, []);
+
+  const answerCall = (accept: boolean) => {
+    if (!incomingCallOffer) return;
+    
+    callService.answerCall(contactId, incomingCallOffer, accept)
+      .catch(() => {
+        toast.error(accept ? 'Failed to answer call' : 'Failed to reject call');
+        onClose();
+      });
   };
 
   const endCall = () => {
-    callService.endCall(contactId || undefined);
+    callService.endCall(contactId);
+    onClose();
   };
 
   const toggleMute = () => {
-    const newMuteState = callService.toggleMute();
-    setIsMuted(newMuteState);
-  };
-
-  const startCallTimer = () => {
-    setCallDuration(0);
-    stopCallTimer();
-    durationTimerRef.current = setInterval(() => {
-      setCallDuration(prev => prev + 1);
-    }, 1000);
-  };
-
-  const stopCallTimer = () => {
-    if (durationTimerRef.current) {
-      clearInterval(durationTimerRef.current);
-      durationTimerRef.current = null;
+    if (callState.localStream) {
+      callState.localStream.getAudioTracks().forEach(track => {
+        track.enabled = isMuted;
+      });
+      setIsMuted(!isMuted);
     }
   };
 
-  const formatDuration = (seconds: number): string => {
+  const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return ${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')};
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
-const getCallStatus = (): string => {
-    if (!callState.isInCall) return isIncoming ? "Incoming call..." : "Calling...";
+
+  const getStatus = () => {
+    if (!callState.isInCall) {
+      return isIncoming ? "Incoming call..." : "Calling...";
+    }
     
     switch (callState.connectionState) {
-      case 'connected':
-        return "In call";
-      case 'connecting':
-      case 'new':
-        return "Connecting...";
-      case 'disconnected':
-      case 'failed':
-      case 'closed':
-        return "Call ended";
-      default:
-        return "Calling...";
+      case 'connected': return "In call";
+      case 'connecting': return "Connecting...";
+      default: return "Call ended";
     }
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-center">
-            {getCallStatus()}
-          </DialogTitle>
+          <DialogTitle className="text-center">{getStatus()}</DialogTitle>
         </DialogHeader>
         
-        <div className="flex flex-col items-center justify-center p-6 space-y-6">
+        <div className="flex flex-col items-center p-6 space-y-6">
           <Avatar className="w-24 h-24">
             {contactAvatar ? (
               <AvatarImage src={contactAvatar} />
             ) : (
-              <AvatarFallback className="bg-[#33C3F0] text-white text-3xl">
+              <AvatarFallback className="bg-[#33C3F0] text-white">
                 {contactName[0]}
               </AvatarFallback>
             )}
@@ -180,51 +124,43 @@ const getCallStatus = (): string => {
             )}
           </div>
           
-          <audio ref={audioRef} autoPlay playsInline />
-          
           <div className="flex justify-center gap-4">
             {isIncoming && !callState.isInCall ? (
               <>
-                <Button 
-                  variant="destructive" 
+                <Button
+                  variant="destructive"
                   size="icon"
                   className="rounded-full w-14 h-14"
                   onClick={() => answerCall(false)}
                 >
-                  <PhoneOff className="h-6 w-6" />
+                  <PhoneOff />
                 </Button>
-                
-                <Button 
-                  variant="default" 
+                <Button
+                  variant="default"
                   size="icon"
                   className="rounded-full w-14 h-14 bg-green-500 hover:bg-green-600"
                   onClick={() => answerCall(true)}
                 >
-                  <Phone className="h-6 w-6" />
+                  <Phone />
                 </Button>
               </>
             ) : (
               <>
-                <Button 
-                  variant={isMuted ? "default" : "outline"} 
+                <Button
+                  variant={isMuted ? "default" : "outline"}
                   size="icon"
                   className="rounded-full w-12 h-12"
                   onClick={toggleMute}
                 >
-                  {isMuted ? (
-                    <MicOff className="h-5 w-5" />
-                  ) : (
-                    <Mic className="h-5 w-5" />
-                  )}
+                  {isMuted ? <MicOff /> : <Mic />}
                 </Button>
-                
-                <Button 
-                  variant="destructive" 
+                <Button
+                  variant="destructive"
                   size="icon"
                   className="rounded-full w-14 h-14"
                   onClick={endCall}
                 >
-                  <PhoneOff className="h-6 w-6" />
+                  <PhoneOff />
                 </Button>
               </>
             )}
