@@ -8,7 +8,6 @@ interface CallData {
   contactName: string;
   contactAvatar: string | null;
   isIncoming: boolean;
-  offer?: RTCSessionDescriptionInit;
 }
 
 const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -32,16 +31,12 @@ const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   }, []);
 
   useEffect(() => {
-    const handleIncomingCall = (data: { 
-      fromUserId: string; 
-      offer: RTCSessionDescriptionInit 
-    }) => {
+    const handleIncomingCall = (data: { fromUserId: string }) => {
       setCallData({
         contactId: data.fromUserId,
         contactName: `User ${data.fromUserId.slice(0, 5)}`,
         contactAvatar: null,
-        isIncoming: true,
-        offer: data.offer
+        isIncoming: true
       });
     };
 
@@ -66,9 +61,7 @@ const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   };
 
   const endCall = () => {
-    if (callData) {
-      callService.endCall(callData.contactId);
-    }
+    callService.endCall();
     setCallData(null);
   };
 
@@ -83,7 +76,6 @@ const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           contactName={callData.contactName}
           contactAvatar={callData.contactAvatar}
           isIncoming={callData.isIncoming}
-          incomingCallOffer={callData.offer}
           onClose={endCall}
         />
       )}
