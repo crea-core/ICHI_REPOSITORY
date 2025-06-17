@@ -30,6 +30,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   const [isMinimized, setIsMinimized] = useState(false);
   const [callState, setCallState] = useState<CallState>();
   const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [hasStartedCall, setHasStartedCall] = useState(false);
   
   const callService = useCallService();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -37,16 +38,20 @@ const CallWindow: React.FC<CallWindowProps> = ({
   const dragControls = useDragControls();
 
   useEffect(() => {
-    setCallState(callService.getState());
+    const currentState = callService.getState();
+    setCallState(currentState);
+    console.log('CallWindow mounted, current state:', currentState);
     
     const handleCallStarted = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
+      console.log('Call started event:', customEvent.detail);
       setCallState(customEvent.detail);
       toast.info("Звонок инициирован...");
     };
     
     const handleCallConnected = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
+      console.log('Call connected event:', customEvent.detail);
       setCallState(customEvent.detail);
       startCallTimer();
       toast.success("Звонок подключен!");
@@ -54,27 +59,46 @@ const CallWindow: React.FC<CallWindowProps> = ({
     
     const handleCallAccepted = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
+      console.log('Call accepted event:', customEvent.detail);
       setCallState(customEvent.detail);
       toast.success("Звонок принят");
     };
     
     const handleCallEnded = (event: Event) => {
       const customEvent = event as CustomEvent<CallState>;
+      console.log('Call ended event:', customEvent.detail);
       setCallState(customEvent.detail);
       stopCallTimer();
       toast.info("Звонок завершен");
-      setTimeout(onClose, 1000);
+      setTimeout(() => {
+        onClose();
+        setHasStartedCall(false);
+      }, 1000);
     };
     
     const handleCallRejected = (event: Event) => {
+      console.log('Call rejected event');
       toast.error("Звонок отклонен");
-      setTimeout(onClose, 1000);
+      setTimeout(() => {
+        onClose();
+        setHasStartedCall(false);
+      }, 1000);
     };
     
     const handleCallFailed = (event: Event) => {
       const customEvent = event as CustomEvent<{message: string}>;
+      console.log('Call failed event:', customEvent.detail);
       toast.error(`Ошибка звонка: ${customEvent.detail.message}`);
-      setTimeout(onClose, 1000);
+      setTimeout(() => {
+        onClose();
+        setHasStartedCall(false);
+      }, 1000);
+    };
+    
+    const handleConnectionStateChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<CallState>;
+      console.log('Connection state changed:', customEvent.detail);
+      setCallState(customEvent.detail);
     };
     
     callService.addEventListener('call_started', handleCallStarted);
@@ -83,10 +107,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
     callService.addEventListener('call_ended', handleCallEnded);
     callService.addEventListener('call_rejected', handleCallRejected);
     callService.addEventListener('call_failed', handleCallFailed);
-    callService.addEventListener('connection_state_changed', (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
-    });
+    callService.addEventListener('connection_state_changed', handleConnectionStateChanged);
     
     return () => {
       callService.removeEventListener('call_started', handleCallStarted);
@@ -95,29 +116,40 @@ const CallWindow: React.FC<CallWindowProps> = ({
       callService.removeEventListener('call_ended', handleCallEnded);
       callService.removeEventListener('call_rejected', handleCallRejected);
       callService.removeEventListener('call_failed', handleCallFailed);
+      callService.removeEventListener('connection_state_changed', handleConnectionStateChanged);
     };
   }, [onClose]);
 
   useEffect(() => {
     if (audioRef.current && callState?.remoteStream) {
+      console.log('Setting remote stream to audio element');
       audioRef.current.srcObject = callState.remoteStream;
-      audioRef.current.play().catch(console.error);
+      audioRef.current.play().catch(error => {
+        console.error('Error playing remote audio:', error);
+      });
     }
   }, [callState?.remoteStream]);
 
   useEffect(() => {
-    if (isOpen && !isIncoming && contactId && !callState?.isInCall) {
+    if (isOpen && !isIncoming && contactId && !hasStartedCall) {
+      console.log('Initiating outgoing call to:', contactId);
+      setHasStartedCall(true);
       initiateCall();
     }
-  }, [isOpen, contactId, isIncoming]);
+  }, [isOpen, contactId, isIncoming, hasStartedCall]);
 
   const initiateCall = async () => {
     try {
+      console.log('Starting call to:', contactId);
       await callService.startCall(contactId);
+      console.log('Call started successfully');
     } catch (error) {
       console.error('Ошибка инициации звонка:', error);
-      toast.error('Не удалось начать звонок');
-      onClose();
+      toast.error('Не удалось начать звонок: ' + (error as Error).message);
+      setTimeout(() => {
+        onClose();
+        setHasStartedCall(false);
+      }, 2000);
     }
   };
 
@@ -150,15 +182,22 @@ const CallWindow: React.FC<CallWindowProps> = ({
         track.enabled = isMuted;
       });
       setIsMuted(!isMuted);
+      toast.info(isMuted ? "Микрофон включен" : "Микрофон выключен");
     }
   };
 
   const endCall = () => {
+    console.log('Ending call with:', contactId);
     callService.endCall(contactId);
+    setHasStartedCall(false);
   };
 
   const getCallStatus = (): string => {
-    if (!callState?.isInCall) return isIncoming ? "Входящий звонок..." : "Вызов...";
+    if (!callState) return isIncoming ? "Входящий звонок..." : "Подключение...";
+    
+    if (!callState.isInCall) {
+      return isIncoming ? "Входящий звонок..." : "Вызов...";
+    }
     
     if (callState.connectionState === 'connected') {
       return "В разговоре";
@@ -337,7 +376,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
         </Card>
         
         {/* Скрытый аудио элемент */}
-        <audio ref={audioRef} autoPlay />
+        <audio ref={audioRef} autoPlay playsInline />
       </motion.div>
     </AnimatePresence>
   );
