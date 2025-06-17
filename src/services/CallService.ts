@@ -7,24 +7,19 @@ export interface CallState {
   remoteStream: MediaStream | null;
 }
 
-// Загружаем PeerJS из CDN
-declare global {
-  interface Window {
-    Peer: any;
-  }
-}
-
 class CallService extends EventEmitter {
-  private peer: any = null;
-  private currentCall: any = null;
+  private ws: WebSocket | null = null;
+  private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private userId: string | null = null;
+  private targetUserId: string | null = null;
+  private signalingServer = "wss://your-websocket-server.com"; // Замените на свой сервер
 
   getState(): CallState {
     return {
-      isInCall: this.currentCall !== null,
-      connectionState: this.currentCall?.peerConnection?.connectionState || 'disconnected',
+      isInCall: this.pc !== null,
+      connectionState: this.pc?.connectionState || 'disconnected',
       localStream: this.localStream,
       remoteStream: this.remoteStream
     };
@@ -33,58 +28,85 @@ class CallService extends EventEmitter {
   async connect(userId: string): Promise<void> {
     this.userId = userId;
     
-    // Динамическая загрузка PeerJS из CDN
-    if (typeof window.Peer === 'undefined') {
-      await new Promise<void>((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js';
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('Failed to load PeerJS'));
-        document.head.appendChild(script);
-      });
-    }
-
     return new Promise((resolve, reject) => {
-      this.peer = new window.Peer(userId, {
-        host: '0.peerjs.com',
-        port: 443,
-        secure: true,
-        path: '/'
-      });
+      if (this.ws) {
+        this.ws.close();
+      }
 
-      this.peer.on('open', () => {
+      this.ws = new WebSocket(`${this.signalingServer}?userId=${userId}`);
+      
+      this.ws.onopen = () => {
         resolve();
-      });
-
-      this.peer.on('error', (error: any) => {
+      };
+      
+      this.ws.onmessage = (event) => {
+        this.handleSignalingMessage(JSON.parse(event.data));
+      };
+      
+      this.ws.onerror = (error) => {
         reject(error);
-      });
-
-      this.peer.on('call', (call: any) => {
-        this.currentCall = call;
-        this.emit('incoming_call', { fromUserId: call.peer });
-      });
+      };
     });
   }
 
+  private async handleSignalingMessage(message: any) {
+    if (!this.pc) return;
+
+    switch (message.type) {
+      case 'offer':
+        await this.pc.setRemoteDescription(new RTCSessionDescription(message.offer));
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        this.send({
+          type: 'answer',
+          targetUserId: message.fromUserId,
+          answer
+        });
+        break;
+        
+      case 'answer':
+        await this.pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+        break;
+        
+      case 'candidate':
+        await this.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+        break;
+        
+      case 'incoming_call':
+        this.emit('incoming_call', {
+          fromUserId: message.fromUserId,
+        });
+        break;
+    }
+  }
+
+  private send(data: any) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
   async startCall(targetUserId: string): Promise<void> {
+    this.targetUserId = targetUserId;
     this.cleanup();
     
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const call = this.peer.call(targetUserId, this.localStream);
-      this.currentCall = call;
-
-      call.on('stream', (remoteStream: MediaStream) => {
-        this.remoteStream = remoteStream;
-        this.emit('stream_changed');
+      this.pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
-
-      call.on('close', () => {
-        this.cleanup();
-        this.emit('call_ended');
+      
+      this.setupPeerConnection();
+      
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      
+      this.send({
+        type: 'offer',
+        targetUserId,
+        offer
       });
-
+      
       this.emit('call_started');
     } catch (error) {
       this.cleanup();
@@ -92,29 +114,52 @@ class CallService extends EventEmitter {
     }
   }
 
-  async answerCall(accept: boolean): Promise<void> {
-    if (!this.currentCall || !this.peer) return;
+  private setupPeerConnection() {
+    if (!this.pc) return;
 
-    if (!accept) {
-      this.currentCall.close();
-      this.cleanup();
-      return;
-    }
-
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.currentCall.answer(this.localStream);
-
-      this.currentCall.on('stream', (remoteStream: MediaStream) => {
-        this.remoteStream = remoteStream;
-        this.emit('stream_changed');
-      });
-
-      this.currentCall.on('close', () => {
+    this.pc.onicecandidate = (event) => {
+      if (event.candidate && this.targetUserId) {
+        this.send({
+          type: 'candidate',
+          targetUserId: this.targetUserId,
+          candidate: event.candidate
+        });
+      }
+    };
+    
+    this.pc.ontrack = (event) => {
+      this.remoteStream = event.streams[0];
+      this.emit('stream_changed');
+    };
+    
+    this.pc.onconnectionstatechange = () => {
+      this.emit('state_changed');
+      
+      if (this.pc?.connectionState === 'connected') {
+        this.emit('call_accepted');
+      }
+      
+      if (this.pc?.connectionState === 'disconnected' || 
+          this.pc?.connectionState === 'failed') {
         this.cleanup();
         this.emit('call_ended');
+      }
+    };
+    
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        this.pc?.addTrack(track, this.localStream!);
       });
+    }
+  }
 
+  async answerCall() {
+    if (!this.pc || !this.targetUserId) return;
+    
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.setupPeerConnection();
+      
       this.emit('call_accepted');
     } catch (error) {
       this.cleanup();
@@ -122,27 +167,24 @@ class CallService extends EventEmitter {
     }
   }
 
-  endCall(): void {
-    if (this.currentCall) {
-      this.currentCall.close();
-    }
+  endCall() {
     this.cleanup();
     this.emit('call_ended');
   }
 
-  private cleanup(): void {
+  private cleanup() {
+    this.pc?.close();
+    this.pc = null;
     this.localStream?.getTracks().forEach(track => track.stop());
     this.localStream = null;
     this.remoteStream = null;
-    this.currentCall = null;
+    this.targetUserId = null;
   }
 
-  disconnect(): void {
+  disconnect() {
     this.cleanup();
-    if (this.peer) {
-      this.peer.destroy();
-      this.peer = null;
-    }
+    this.ws?.close();
+    this.ws = null;
   }
 }
 
