@@ -1,291 +1,409 @@
-// src/services/CallService.ts
-import { createClient } from '@supabase/supabase-js';
-import { EventEmitter } from 'events';
 
-const supabase = createClient(
-  process.env.zklavsvtcnrcozsgmchq.supabase.co/functions/v1/voice-call!,
-  process.env.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprbGF2c3Z0Y25yY296c2dtY2hxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc3MzU4ODQsImV4cCI6MjA2MzMxMTg4NH0.g_Sd37PapvRX98J8KCCoIEddQcwMJLN6vSBrEi4pzjM!
-);
-
-export type CallState = {
+export interface CallState {
   isInCall: boolean;
-  isCallActive: boolean;
-  isCallInitiator: boolean;
+  connectionState: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
-  connectionState: RTCPeerConnectionState;
-  callStatus: 'idle' | 'connecting' | 'ringing' | 'active' | 'ended';
-};
+}
 
-export class CallService extends EventEmitter {
+interface CallServiceOptions {
+  onIncomingCall?: (fromUserId: string, offer: RTCSessionDescriptionInit) => void;
+  onCallAnswer?: (fromUserId: string, answer: RTCSessionDescriptionInit, accepted: boolean) => void;
+  onCallEnded?: (fromUserId: string) => void;
+  onConnectionStatusChange?: (status: string) => void;
+}
+
+class CallService extends EventTarget {
+  private ws: WebSocket | null = null;
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
-  private signalingChannel: any = null;
-  private currentUserId: string | null = null;
-  private state: CallState = {
+  private userId: string | null = null;
+  private options: CallServiceOptions = {};
+  private isConnected = false;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectInterval: NodeJS.Timeout | null = null;
+  private currentCallState: CallState = {
     isInCall: false,
-    isCallActive: false,
-    isCallInitiator: false,
-    localStream: null,
-    remoteStream: null,
     connectionState: 'disconnected',
-    callStatus: 'idle'
+    localStream: null,
+    remoteStream: null
   };
 
-  constructor() {
+  constructor(options: CallServiceOptions = {}) {
     super();
-    this.setMaxListeners(20); // Увеличиваем лимит подписчиков
-  }
-
-  // Инициализация сервиса с ID пользователя
-  initialize(userId: string) {
-    this.currentUserId = userId;
-    this.setupSignaling();
+    this.options = options;
   }
 
   getState(): CallState {
-    return this.state;
+    return {
+      ...this.currentCallState,
+      localStream: this.localStream,
+      remoteStream: this.remoteStream
+    };
   }
 
-  private updateState(newState: Partial<CallState>) {
-    this.state = { ...this.state, ...newState };
-    this.emit('state_changed', this.state);
+  private updateState(updates: Partial<CallState>) {
+    this.currentCallState = { ...this.currentCallState, ...updates };
+    this.dispatchEvent(new CustomEvent('connection_state_changed', { detail: this.getState() }));
   }
 
-  private async setupLocalStream() {
-    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    this.updateState({ localStream: this.localStream });
-  }
+  async connect(userId: string): Promise<void> {
+    this.userId = userId;
+    
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log('WebSocket уже подключен');
+      return;
+    }
 
-  private setupSignaling() {
-    if (!this.currentUserId) return;
-
-    this.signalingChannel = supabase.channel('voice_calls');
-
-    this.signalingChannel
-      .on('broadcast', { event: 'call_offer' }, (payload: any) => {
-        if (payload.targetUserId === this.currentUserId) {
-          this.emit('incoming_call', {
-            fromUserId: payload.fromUserId,
-            offer: payload.offer
-          });
-        }
-      })
-      .on('broadcast', { event: 'call_answer' }, (payload: any) => {
-        if (payload.targetUserId === this.currentUserId) {
-          if (payload.answer) {
-            this.handleAnswer(payload.answer);
+    return new Promise((resolve, reject) => {
+      try {
+        const wsUrl = `wss://zklavsvtcnrcozsgmchq.functions.supabase.co/voice-call?userId=${userId}`;
+        console.log('Подключение к WebSocket:', wsUrl);
+        
+        this.ws = new WebSocket(wsUrl);
+        
+        this.ws.onopen = () => {
+          console.log('WebSocket подключен успешно');
+          this.isConnected = true;
+          this.reconnectAttempts = 0;
+          if (this.reconnectInterval) {
+            clearInterval(this.reconnectInterval);
+            this.reconnectInterval = null;
           }
-          if (payload.accepted) {
-            this.emit('call_accepted');
-          } else {
-            this.emit('call_rejected');
-            this.cleanup();
+          this.updateState({ connectionState: 'connected' });
+          this.options.onConnectionStatusChange?.('connected');
+          resolve();
+        };
+
+        this.ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            console.log('Получено сообщение WebSocket:', message);
+            this.handleWebSocketMessage(message);
+          } catch (error) {
+            console.error('Ошибка разбора сообщения WebSocket:', error);
           }
-        }
-      })
-      .on('broadcast', { event: 'ice_candidate' }, (payload: any) => {
-        if (payload.targetUserId === this.currentUserId && payload.candidate) {
-          this.handleICECandidate(payload.candidate);
-        }
-      })
-      .on('broadcast', { event: 'call_ended' }, (payload: any) => {
-        if (payload.targetUserId === this.currentUserId) {
-          this.emit('remote_hangup');
-          this.cleanup();
-        }
-      })
-      .subscribe();
+        };
+
+        this.ws.onclose = (event) => {
+          console.log('WebSocket соединение закрыто:', event.code, event.reason);
+          this.isConnected = false;
+          this.updateState({ connectionState: 'disconnected' });
+          this.options.onConnectionStatusChange?.('disconnected');
+          
+          if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.scheduleReconnect();
+          }
+        };
+
+        this.ws.onerror = (error) => {
+          console.error('Ошибка WebSocket:', error);
+          this.options.onConnectionStatusChange?.('error');
+          reject(error);
+        };
+
+        setTimeout(() => {
+          if (!this.isConnected) {
+            reject(new Error('Превышено время ожидания подключения'));
+          }
+        }, 10000);
+
+      } catch (error) {
+        console.error('Ошибка создания WebSocket:', error);
+        reject(error);
+      }
+    });
   }
 
-  async startCall(targetUserId: string) {
-    if (!this.currentUserId) throw new Error('CallService not initialized');
+  private scheduleReconnect(): void {
+    if (this.reconnectInterval) {
+      clearInterval(this.reconnectInterval);
+    }
+
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    console.log(`Попытка переподключения ${this.reconnectAttempts + 1} через ${delay}ms`);
+    
+    this.reconnectInterval = setTimeout(() => {
+      this.reconnectAttempts++;
+      if (this.userId) {
+        this.connect(this.userId).catch(error => {
+          console.error('Ошибка переподключения:', error);
+        });
+      }
+    }, delay);
+  }
+
+  private handleWebSocketMessage(message: any): void {
+    switch (message.type) {
+      case 'incoming_call':
+        console.log('Входящий звонок от:', message.fromUserId);
+        this.options.onIncomingCall?.(message.fromUserId, message.offer);
+        
+        document.dispatchEvent(new CustomEvent('incomingCall', {
+          detail: {
+            fromUserId: message.fromUserId,
+            offer: message.offer
+          }
+        }));
+        break;
+
+      case 'call_answered':
+        console.log('Звонок отвечен:', message.accepted);
+        if (message.accepted && message.answer) {
+          this.handleCallAccepted(message.answer);
+        }
+        this.options.onCallAnswer?.(message.fromUserId, message.answer, message.accepted);
+        break;
+
+      case 'call_ended':
+        console.log('Звонок завершен:', message.fromUserId);
+        this.options.onCallEnded?.(message.fromUserId);
+        this.dispatchEvent(new CustomEvent('call_ended', { detail: this.getState() }));
+        this.cleanup();
+        break;
+
+      case 'ice_candidate':
+        console.log('Получен ICE кандидат');
+        if (this.peerConnection && message.candidate) {
+          this.peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+        break;
+
+      case 'call_failed':
+        console.log('Звонок не удался:', message.message);
+        break;
+
+      default:
+        console.log('Неизвестный тип сообщения:', message.type);
+    }
+  }
+
+  async startCall(targetUserId: string): Promise<void> {
+    if (!this.ws || !this.isConnected) {
+      throw new Error('WebSocket не подключен');
+    }
 
     try {
-      this.updateState({
-        isInCall: true,
-        isCallInitiator: true,
-        callStatus: 'ringing'
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: true
       });
 
-      await this.setupLocalStream();
-      this.setupPeerConnection(targetUserId);
+      this.peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
 
-      const offer = await this.peerConnection!.createOffer();
-      await this.peerConnection!.setLocalDescription(offer);
+      this.localStream.getTracks().forEach(track => {
+        this.peerConnection!.addTrack(track, this.localStream!);
+      });
 
-      this.signalingChannel.send({
-        type: 'broadcast',
-        event: 'call_offer',
-        payload: {
-          targetUserId,
-          fromUserId: this.currentUserId,
-          offer
+      this.peerConnection.ontrack = (event) => {
+        this.remoteStream = event.streams[0];
+        this.updateState({ remoteStream: this.remoteStream });
+      };
+
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate && this.ws) {
+          this.ws.send(JSON.stringify({
+            type: 'ice_candidate',
+            targetUserId,
+            candidate: event.candidate
+          }));
         }
-      });
+      };
 
-      this.updateState({ callStatus: 'connecting' });
-      this.emit('call_started');
+      this.peerConnection.onconnectionstatechange = () => {
+        if (this.peerConnection) {
+          this.updateState({ connectionState: this.peerConnection.connectionState });
+          
+          if (this.peerConnection.connectionState === 'connected') {
+            this.updateState({ isInCall: true });
+            this.dispatchEvent(new CustomEvent('call_started', { detail: this.getState() }));
+          }
+        }
+      };
+
+      const offer = await this.peerConnection.createOffer();
+      await this.peerConnection.setLocalDescription(offer);
+
+      this.ws.send(JSON.stringify({
+        type: 'call_offer',
+        targetUserId,
+        offer
+      }));
+
+      this.updateState({ isInCall: true, localStream: this.localStream });
+      this.dispatchEvent(new CustomEvent('call_started', { detail: this.getState() }));
+
     } catch (error) {
-      console.error('Call failed:', error);
+      console.error('Ошибка инициации звонка:', error);
       this.cleanup();
       throw error;
     }
   }
 
-  async answerCall(targetUserId: string, offer: RTCSessionDescriptionInit, accept: boolean) {
-    if (!this.currentUserId) throw new Error('CallService not initialized');
-if (!accept) {
-      this.signalingChannel.send({
-        type: 'broadcast',
-        event: 'call_answer',
-        payload: {
-          targetUserId,
-          fromUserId: this.currentUserId,
-          accepted: false
-        }
-      });
-      this.cleanup();
+  private async handleCallAccepted(answer: RTCSessionDescriptionInit): Promise<void> {
+    if (this.peerConnection) {
+      try {
+        await this.peerConnection.setRemoteDescription(answer);
+        this.dispatchEvent(new CustomEvent('call_accepted', { detail: this.getState() }));
+      } catch (error) {
+        console.error('Ошибка установки remote description:', error);
+      }
+    }
+  }
+
+  async answerCall(fromUserId: string, offer: RTCSessionDescriptionInit, accepted: boolean): Promise<void> {
+    if (!this.ws || !this.isConnected) {
+      throw new Error('WebSocket не подключен');
+    }
+
+    if (!accepted) {
+      this.ws.send(JSON.stringify({
+        type: 'call_answer',
+        targetUserId: fromUserId,
+        accepted: false
+      }));
       return;
     }
 
     try {
-      this.updateState({
-        isInCall: true,
-        isCallInitiator: false,
-        callStatus: 'connecting'
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: true
       });
 
-      await this.setupLocalStream();
-      this.setupPeerConnection(targetUserId);
+      this.peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
 
-      await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await this.peerConnection!.createAnswer();
-      await this.peerConnection!.setLocalDescription(answer);
+      this.localStream.getTracks().forEach(track => {
+        this.peerConnection!.addTrack(track, this.localStream!);
+      });
 
-      this.signalingChannel.send({
-        type: 'broadcast',
-        event: 'call_answer',
-        payload: {
-          targetUserId,
-          fromUserId: this.currentUserId,
-          answer,
-          accepted: true
+      this.peerConnection.ontrack = (event) => {
+        this.remoteStream = event.streams[0];
+        this.updateState({ remoteStream: this.remoteStream });
+      };
+
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate && this.ws) {
+          this.ws.send(JSON.stringify({
+            type: 'ice_candidate',
+            targetUserId: fromUserId,
+            candidate: event.candidate
+          }));
         }
-      });
+      };
 
-      this.emit('call_accepted');
+      this.peerConnection.onconnectionstatechange = () => {
+        if (this.peerConnection) {
+          this.updateState({ connectionState: this.peerConnection.connectionState });
+          
+          if (this.peerConnection.connectionState === 'connected') {
+            this.updateState({ isInCall: true });
+            this.dispatchEvent(new CustomEvent('call_accepted', { detail: this.getState() }));
+          }
+        }
+      };
+
+      await this.peerConnection.setRemoteDescription(offer);
+      const answer = await this.peerConnection.createAnswer();
+      await this.peerConnection.setLocalDescription(answer);
+
+      this.ws.send(JSON.stringify({
+        type: 'call_answer',
+        targetUserId: fromUserId,
+        answer,
+        accepted: true
+      }));
+
+      this.updateState({ isInCall: true, localStream: this.localStream });
+
     } catch (error) {
-      console.error('Error answering call:', error);
+      console.error('Ошибка ответа на звонок:', error);
       this.cleanup();
       throw error;
     }
   }
 
-  endCall(targetUserId?: string) {
-    if (targetUserId && this.signalingChannel) {
-      this.signalingChannel.send({
-        type: 'broadcast',
-        event: 'call_ended',
-        payload: {
-          targetUserId,
-          fromUserId: this.currentUserId
-        }
-      });
+  endCall(targetUserId?: string): void {
+    if (this.ws && this.isConnected && targetUserId) {
+      this.ws.send(JSON.stringify({
+        type: 'end_call',
+        targetUserId
+      }));
     }
-    this.emit('call_ended');
+    
+    this.dispatchEvent(new CustomEvent('call_ended', { detail: this.getState() }));
     this.cleanup();
   }
 
-  private setupPeerConnection(targetUserId: string) {
-    this.peerConnection = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-      ]
-    });
+  private cleanup(): void {
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => track.stop());
+      this.localStream = null;
+    }
 
-    this.localStream!.getTracks().forEach(track => {
-      this.peerConnection!.addTrack(track, this.localStream!);
-    });
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
 
-    this.peerConnection.ontrack = (event) => {
-      this.remoteStream = event.streams[0];
-      this.updateState({ remoteStream: this.remoteStream });
-      this.emit('stream_received', this.remoteStream);
-    };
-
-    this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.signalingChannel.send({
-          type: 'broadcast',
-          event: 'ice_candidate',
-          payload: {
-            targetUserId,
-            fromUserId: this.currentUserId,
-            candidate: event.candidate
-          }
-        });
-      }
-    };
-
-    this.peerConnection.onconnectionstatechange = () => {
-      const state = this.peerConnection?.connectionState;
-      if (state) {
-        this.updateState({ connectionState: state });
-        this.emit('connection_state_changed', state);
-        
-        if (state === 'connected') {
-          this.updateState({ isCallActive: true, callStatus: 'active' });
-          this.emit('call_connected');
-        } else if (state === 'disconnected' || state === 'failed') {
-          this.emit('call_disconnected');
-          this.cleanup();
-        }
-      }
-    };
-  }
-
-  private async handleAnswer(answer: RTCSessionDescriptionInit) {
-    if (!this.peerConnection) return;
-    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-  }
-
-  private async handleICECandidate(candidate: RTCIceCandidateInit) {
-    if (!this.peerConnection) return;
-    await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-  }
-
-  private cleanup() {
-    this.localStream?.getTracks().forEach(track => track.stop());
-    this.peerConnection?.close();
-    
-    this.localStream = null;
-    this.peerConnection = null;
     this.remoteStream = null;
-    
     this.updateState({
       isInCall: false,
-      isCallActive: false,
-      localStream: null,
-      remoteStream: null,
       connectionState: 'disconnected',
-      callStatus: 'ended'
+      localStream: null,
+      remoteStream: null
     });
   }
-toggleMute() {
-    if (this.localStream) {
-      const newMuteState = !this.localStream.getAudioTracks()[0].enabled;
-      this.localStream.getAudioTracks()[0].enabled = newMuteState;
-      this.emit('mute_toggled', newMuteState);
-      return newMuteState;
+
+  disconnect(): void {
+    this.cleanup();
+    
+    if (this.reconnectInterval) {
+      clearInterval(this.reconnectInterval);
+      this.reconnectInterval = null;
     }
-    return false;
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    
+    this.isConnected = false;
+    this.userId = null;
+  }
+
+  getLocalStream(): MediaStream | null {
+    return this.localStream;
+  }
+
+  getRemoteStream(): MediaStream | null {
+    return this.remoteStream;
+  }
+
+  isCallActive(): boolean {
+    return this.peerConnection !== null;
+  }
+
+  getConnectionStatus(): string {
+    if (!this.ws) return 'disconnected';
+    
+    switch (this.ws.readyState) {
+      case WebSocket.CONNECTING: return 'connecting';
+      case WebSocket.OPEN: return 'connected';
+      case WebSocket.CLOSING: return 'closing';
+      case WebSocket.CLOSED: return 'disconnected';
+      default: return 'unknown';
+    }
   }
 }
 
-// Экспортируем singleton экземпляр
-export const callService = new CallService();
+const callService = new CallService();
 
+export const useCallService = () => callService;
+export { CallService };
