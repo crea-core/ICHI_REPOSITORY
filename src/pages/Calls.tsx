@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { MessageCircle, Phone, PhoneCall, Bell, VolumeX } from "lucide-react";
+import { PhoneCall, VolumeX } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useCallService } from "@/services/CallService";
@@ -66,7 +66,6 @@ const Calls = () => {
       stopCallTimer();
       toast.info("Звонок завершен");
       
-      // Перенаправляем на страницу чата после звонка
       setTimeout(() => {
         navigate("/chat");
       }, 2000);
@@ -107,9 +106,7 @@ const Calls = () => {
             .eq('id', contactId)
             .single();
             
-          if (error) {
-            throw error;
-          }
+          if (error) throw error;
           
           if (data) {
             setActiveContact({
@@ -119,7 +116,7 @@ const Calls = () => {
               avatar_url: data.avatar_url
             });
             
-            // Начинаем звонок, если найден контакт
+            // Начинаем звонок
             if (currentUserId) {
               try {
                 await callService.startCall(data.id);
@@ -176,7 +173,7 @@ const Calls = () => {
     const state = callService.getState();
     if (state.localStream) {
       state.localStream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled; // Инвертируем текущее состояние
+        track.enabled = !track.enabled;
       });
       setIsMuted(!state.localStream.getAudioTracks()[0].enabled);
     }
@@ -224,7 +221,6 @@ const Calls = () => {
                   )}
                 </Avatar>
                 <h2 className="text-2xl font-semibold">{activeContact.name}</h2>
-                {activeContact.email && <p className="text-gray-500 mb-6">{activeContact.email}</p>}
                 
                 {callStatus === "calling" && (
                   <p className="text-lg mb-6 animate-pulse">Вызов...</p>
@@ -267,28 +263,10 @@ const Calls = () => {
                   )}
                 </div>
               </div>
-              
-              {/* Техническая информация о WebRTC */}
-              <div className="mt-12 text-sm text-left p-4 bg-gray-100 rounded-lg">
-                <h3 className="font-medium mb-2">Техническая информация:</h3>
-                <p>
-                  Реализованы голосовые звонки с использованием WebRTC и PeerJS.
-                  PeerJS обеспечивает простое peer-to-peer соединение между браузерами для передачи аудио.
-                </p>
-                <p className="mt-2">
-                  Преимущества решения:
-                </p>
-                <ul className="list-disc pl-5 mt-1 space-y-1">
-                  <li>Прямое соединение между пользователями без промежуточных серверов</li>
-                  <li>Минимальная задержка аудио</li>
-                  <li>Автоматическая обработка NAT traversal с помощью STUN</li>
-                  <li>Простая интеграция с React приложением</li>
-                </ul>
-              </div>
             </>
           ) : (
             <div className="text-center">
-              <Phone className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+              <PhoneCall className="mx-auto h-16 w-16 text-gray-300 mb-4" />
               <h3 className="text-xl font-medium">Контакт не найден</h3>
               <p className="text-gray-500 mt-2">Невозможно найти пользователя для звонка</p>
               <Button 
