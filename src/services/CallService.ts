@@ -1,4 +1,3 @@
-// services/CallService.ts
 import { supabase } from "@/integrations/supabase/client";
 import { RealtimeChannel } from "@supabase/supabase-js";
 
@@ -50,27 +49,31 @@ class CallService extends EventTarget {
   async connect(userId: string): Promise<void> {
     this.userId = userId;
 
-    this.signalingChannel = supabase.channel(`calls:${userId}`);
+    this.signalingChannel = supabase.channel('calls');
+
     this.signalingChannel
-      .on('broadcast', { event: 'call_offer' }, ({ payload }) => {
-        this.options.onIncomingCall?.(payload.fromUserId, payload.offer);
-      })
-      .on('broadcast', { event: 'call_answer' }, ({ payload }) => {
-        this.options.onCallAnswer?.(payload.fromUserId, payload.answer, payload.accepted);
-        if (payload.accepted && payload.answer) {
-          this.handleCallAccepted(payload.answer);
-        } else {
-          this.dispatchEvent(new CustomEvent('call_rejected', { detail: this.getState() }));
+      .on('broadcast', { event: 'signal' }, ({ payload }) => {
+        if (payload.targetUserId !== this.userId) return;
+
+        const { type, fromUserId } = payload;
+
+        if (type === 'call_offer') {
+          this.options.onIncomingCall?.(fromUserId, payload.offer);
+        } else if (type === 'call_answer') {
+          if (payload.accepted) {
+            this.handleCallAccepted(payload.answer);
+          } else {
+            this.dispatchEvent(new CustomEvent('call_rejected', { detail: this.getState() }));
+          }
+          this.options.onCallAnswer?.(fromUserId, payload.answer, payload.accepted);
+        } else if (type === 'ice_candidate') {
+          if (this.peerConnection && payload.candidate) {
+            this.peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(console.error);
+          }
+        } else if (type === 'call_ended') {
+          this.dispatchEvent(new CustomEvent('call_ended', { detail: this.getState() }));
+          this.cleanup();
         }
-      })
-      .on('broadcast', { event: 'ice_candidate' }, ({ payload }) => {
-        if (this.peerConnection && payload.candidate) {
-          this.peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(console.error);
-        }
-      })
-      .on('broadcast', { event: 'call_ended' }, () => {
-        this.dispatchEvent(new CustomEvent('call_ended', { detail: this.getState() }));
-        this.cleanup();
       })
       .subscribe();
 
@@ -89,9 +92,8 @@ class CallService extends EventTarget {
     const offer = await this.peerConnection.createOffer();
     await this.peerConnection.setLocalDescription(offer);
 
-    await this.broadcast('call_offer', {
-      toUserId: targetUserId,
-      fromUserId: this.userId,
+    await this.sendSignal('call_offer', {
+      targetUserId,
       offer
     });
 
@@ -105,9 +107,8 @@ class CallService extends EventTarget {
 
   async answerCall(fromUserId: string, offer: RTCSessionDescriptionInit, accepted: boolean): Promise<void> {
     if (!accepted) {
-      await this.broadcast('call_answer', {
-        toUserId: fromUserId,
-        fromUserId: this.userId,
+      await this.sendSignal('call_answer', {
+        targetUserId: fromUserId,
         accepted: false
       });
       return;
@@ -125,9 +126,8 @@ class CallService extends EventTarget {
     const answer = await this.peerConnection.createAnswer();
     await this.peerConnection.setLocalDescription(answer);
 
-    await this.broadcast('call_answer', {
-      toUserId: fromUserId,
-      fromUserId: this.userId,
+    await this.sendSignal('call_answer', {
+      targetUserId: fromUserId,
       answer,
       accepted: true
     });
@@ -141,10 +141,7 @@ class CallService extends EventTarget {
 
   endCall(targetUserId?: string): void {
     if (targetUserId) {
-      this.broadcast('call_ended', {
-        toUserId: targetUserId,
-        fromUserId: this.userId
-      });
+      this.sendSignal('call_ended', { targetUserId });
     }
     this.dispatchEvent(new CustomEvent('call_ended', { detail: this.getState() }));
     this.cleanup();
@@ -189,9 +186,8 @@ class CallService extends EventTarget {
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        this.broadcast('ice_candidate', {
-          toUserId: targetUserId,
-          fromUserId: this.userId,
+        this.sendSignal('ice_candidate', {
+          targetUserId,
           candidate: e.candidate
         });
       }
@@ -209,14 +205,16 @@ class CallService extends EventTarget {
     return pc;
   }
 
-  private async broadcast(event: string, payload: any) {
-    if (payload.toUserId) {
-      await supabase.channel(`calls:${payload.toUserId}`).send({
-        type: 'broadcast',
-        event,
-        payload
-      });
-    }
+  private async sendSignal(type: string, payload: any) {
+    await supabase.channel('calls').send({
+      type: 'broadcast',
+      event: 'signal',
+      payload: {
+        type,
+        ...payload,
+        fromUserId: this.userId,
+      }
+    });
   }
 }
 
