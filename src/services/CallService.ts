@@ -59,7 +59,7 @@ class CallService extends EventTarget {
 
     return new Promise((resolve, reject) => {
       try {
-        const wsUrl = `wss://zklavsvtcnrcozsgmchq.functions.supabase.co/voice-call?userId=${userId}`;
+        const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/functions/v1/voice-call?userId=${userId}`;
         console.log('Подключение к WebSocket:', wsUrl);
         
         this.ws = new WebSocket(wsUrl);
@@ -153,6 +153,8 @@ class CallService extends EventTarget {
         console.log('Звонок отвечен:', message.accepted);
         if (message.accepted && message.answer) {
           this.handleCallAccepted(message.answer);
+        } else {
+          this.dispatchEvent(new CustomEvent('call_rejected', { detail: this.getState() }));
         }
         this.options.onCallAnswer?.(message.fromUserId, message.answer, message.accepted);
         break;
@@ -173,6 +175,7 @@ class CallService extends EventTarget {
 
       case 'call_failed':
         console.log('Звонок не удался:', message.message);
+        this.dispatchEvent(new CustomEvent('call_failed', { detail: { message: message.message } }));
         break;
 
       default:
@@ -200,6 +203,7 @@ class CallService extends EventTarget {
       });
 
       this.peerConnection.ontrack = (event) => {
+        console.log('Получен удаленный поток');
         this.remoteStream = event.streams[0];
         this.updateState({ remoteStream: this.remoteStream });
       };
@@ -216,11 +220,12 @@ class CallService extends EventTarget {
 
       this.peerConnection.onconnectionstatechange = () => {
         if (this.peerConnection) {
+          console.log('Состояние соединения:', this.peerConnection.connectionState);
           this.updateState({ connectionState: this.peerConnection.connectionState });
           
           if (this.peerConnection.connectionState === 'connected') {
             this.updateState({ isInCall: true });
-            this.dispatchEvent(new CustomEvent('call_started', { detail: this.getState() }));
+            this.dispatchEvent(new CustomEvent('call_connected', { detail: this.getState() }));
           }
         }
       };
@@ -248,6 +253,7 @@ class CallService extends EventTarget {
     if (this.peerConnection) {
       try {
         await this.peerConnection.setRemoteDescription(answer);
+        console.log('Ответ обработан, ожидаем соединения');
         this.dispatchEvent(new CustomEvent('call_accepted', { detail: this.getState() }));
       } catch (error) {
         console.error('Ошибка установки remote description:', error);
@@ -284,6 +290,7 @@ class CallService extends EventTarget {
       });
 
       this.peerConnection.ontrack = (event) => {
+        console.log('Получен удаленный поток');
         this.remoteStream = event.streams[0];
         this.updateState({ remoteStream: this.remoteStream });
       };
@@ -300,11 +307,12 @@ class CallService extends EventTarget {
 
       this.peerConnection.onconnectionstatechange = () => {
         if (this.peerConnection) {
+          console.log('Состояние соединения:', this.peerConnection.connectionState);
           this.updateState({ connectionState: this.peerConnection.connectionState });
           
           if (this.peerConnection.connectionState === 'connected') {
             this.updateState({ isInCall: true });
-            this.dispatchEvent(new CustomEvent('call_accepted', { detail: this.getState() }));
+            this.dispatchEvent(new CustomEvent('call_connected', { detail: this.getState() }));
           }
         }
       };
