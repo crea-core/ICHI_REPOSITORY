@@ -1,5 +1,4 @@
 
-
 export const en = {
   // Navigation
   "dashboard": "Dashboard",
@@ -100,8 +99,33 @@ export const en = {
   "contacts": "Contacts",
   "nothing found": "Nothing found",
   
-  // Common
+  // Auth page translations
+  "manage tasks and communicate with team": "Manage tasks and communicate with your team",
+  "tasktide convenient platform": "TaskTide is a convenient platform for task management, communication and efficient teamwork.",
+  "start free": "Start Free",
+  "learn more": "Learn More",
+  "main features": "Main Features",
+  "task pinboard": "Task Pinboard",
+  "manage and pin tasks": "Manage and pin tasks to always have access to important information.",
+  "chats and calls": "Chats and Calls",
+  "communicate with team": "Communicate with your team through text messages and voice calls.",
+  "electronic mail": "Electronic Mail",
+  "integrated email work": "Integrated email work without switching between applications.",
+  "register": "Register",
+  "all rights reserved": "All rights reserved.",
+  "go to dashboard": "Go to Dashboard",
+  "login": "Login",
+  "create new account": "Create new account",
+  "enter account": "Enter account",
+  "password": "Password",
   "loading": "Loading...",
+  "or": "or",
+  "login with google": "Login with Google",
+  "already have account": "Already have an account? Login",
+  "no account": "No account? Create account",
+  "registration successful": "Registration successful! Check your email.",
+  
+  // Common
   "error": "Error", 
   "success": "Success",
   "close": "Close",
@@ -109,6 +133,8 @@ export const en = {
   // Russian search terms (for multilingual search)
   "покой": "Quietude",
   "чат": "Chat",
-  "back_to_dashboard": "Back to Dashboard"
+  "back_to_dashboard": "Back to Dashboard",
+  
+  // Theme toggle
+  "toggle_theme": "Toggle theme"
 };
-
