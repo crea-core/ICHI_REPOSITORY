@@ -13,6 +13,7 @@ interface CallWindowProps {
   contactName: string;
   contactAvatar: string | null;
   isIncoming: boolean;
+  incomingCallOffer?: RTCSessionDescriptionInit;
   onClose: () => void;
 }
 
@@ -22,6 +23,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   contactName,
   contactAvatar,
   isIncoming,
+  incomingCallOffer,
   onClose
 }) => {
   const [callDuration, setCallDuration] = useState(0);
@@ -55,6 +57,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
       'call_started',
       'call_accepted',
       'call_ended',
+      'state_changed',
       'stream_changed'
     ];
 
@@ -70,11 +73,17 @@ const CallWindow: React.FC<CallWindowProps> = ({
   }, []);
 
   const answerCall = (accept: boolean) => {
-    callService.answerCall(accept)
-      .catch(() => {
-        toast.error(accept ? 'Failed to answer call' : 'Failed to reject call');
+    if (isIncoming && incomingCallOffer) {
+      if (accept) {
+        callService.answerCall(incomingCallOffer).catch(error => {
+          toast.error('Failed to answer call: ' + error.message);
+          onClose();
+        });
+      } else {
+        callService.endCall();
         onClose();
-      });
+      }
+    }
   };
 
   const endCall = () => {
