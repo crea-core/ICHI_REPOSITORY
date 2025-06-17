@@ -192,23 +192,45 @@ const CallWindow: React.FC<CallWindowProps> = ({
                   )}
 
                   <div className="flex justify-center gap-4 mt-6">
-                    <Button
-                      variant={isMuted ? "default" : "outline"}
-                      size="icon"
-                      className="rounded-full w-12 h-12"
-                      onClick={toggleMute}
-                    >
-                      {isMuted ? <MicOff /> : <Mic />}
-                    </Button>
-                    
-                    <Button
-                      variant="destructive"
-                      size="icon"
-                      className="rounded-full w-14 h-14"
-                      onClick={endCall}
-                    >
-                      <PhoneOff />
-                    </Button>
+                    {isIncoming && !callState.isInCall ? (
+                      <>
+                        <Button
+                          variant="destructive"
+                          size="icon"
+                          className="rounded-full w-12 h-12"
+                          onClick={() => answerCall(false)}
+                        >
+                          <PhoneOff />
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="icon"
+                          className="rounded-full w-12 h-12 bg-green-500 hover:bg-green-600"
+                          onClick={() => answerCall(true)}
+                        >
+                          <Phone />
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          variant={isMuted ? "default" : "outline"}
+                          size="icon"
+                          className="rounded-full w-12 h-12"
+                          onClick={toggleMute}
+                        >
+                          {isMuted ? <MicOff /> : <Mic />}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="icon"
+                          className="rounded-full w-14 h-14"
+                          onClick={endCall}
+                        >
+                          <PhoneOff />
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </motion.div>
