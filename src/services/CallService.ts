@@ -1,4 +1,6 @@
 import { EventEmitter } from 'eventemitter3';
+import { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface CallState {
   isInCall: boolean;
@@ -8,13 +10,12 @@ export interface CallState {
 }
 
 class CallService extends EventEmitter {
-  private ws: WebSocket | null = null;
+  private channel: RealtimeChannel | null = null;
   private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private userId: string | null = null;
   private targetUserId: string | null = null;
-  private signalingServer = "wss://localhost:8080"; // ВАЖНО ПРИ ДЕПЛОЕ
 
   getState(): CallState {
     return {
@@ -28,24 +29,35 @@ class CallService extends EventEmitter {
   async connect(userId: string): Promise<void> {
     this.userId = userId;
     
-    return new Promise((resolve, reject) => {
-      if (this.ws) {
-        this.ws.close();
-      }
+    // Отключаемся от предыдущего канала
+    if (this.channel) {
+      this.channel.unsubscribe();
+    }
 
-      this.ws = new WebSocket(`${this.signalingServer}?userId=${userId}`);
-      
-      this.ws.onopen = () => {
-        resolve();
-      };
-      
-      this.ws.onmessage = (event) => {
-        this.handleSignalingMessage(JSON.parse(event.data));
-      };
-      
-      this.ws.onerror = (error) => {
-        reject(error);
-      };
+    // Создаем канал для сигналинга
+    this.channel = supabase.channel(`calls_${userId}`, {
+      config: {
+        presence: {
+          key: userId
+        }
+      }
+    });
+
+    // Подписываемся на входящие сообщения
+    this.channel
+      .on('broadcast', { event: 'signal' }, (payload) => {
+        this.handleSignalingMessage(payload.payload);
+      })
+      .subscribe();
+
+    return new Promise((resolve, reject) => {
+      this.channel?.on('system', (event) => {
+        if (event === 'SUBSCRIBED') {
+          resolve();
+        } else if (event === 'CHANNEL_ERROR') {
+          reject(new Error('Channel error'));
+        }
+      });
     });
   }
 
@@ -57,9 +69,8 @@ class CallService extends EventEmitter {
         await this.pc.setRemoteDescription(new RTCSessionDescription(message.offer));
         const answer = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
-        this.send({
+        this.sendSignal(message.fromUserId, {
           type: 'answer',
-          targetUserId: message.fromUserId,
           answer
         });
         break;
@@ -72,18 +83,27 @@ class CallService extends EventEmitter {
         await this.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
         break;
         
-      case 'incoming_call':
+      case 'call':
         this.emit('incoming_call', {
           fromUserId: message.fromUserId,
+          offer: message.offer
         });
         break;
     }
   }
 
-  private send(data: any) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
-    }
+  private async sendSignal(targetUserId: string, data: any) {
+    if (!this.channel) return;
+    
+    await this.channel.send({
+      type: 'broadcast',
+      event: 'signal',
+      payload: {
+        ...data,
+        toUserId: targetUserId,
+        fromUserId: this.userId
+      }
+    });
   }
 
   async startCall(targetUserId: string): Promise<void> {
@@ -101,11 +121,19 @@ class CallService extends EventEmitter {
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
       
-      this.send({
-        type: 'offer',
-        targetUserId,
-        offer
-      });
+      // Отправляем сигнал вызова через канал
+      if (this.channel) {
+        await this.channel.send({
+          type: 'broadcast',
+          event: 'signal',
+          payload: {
+            type: 'call',
+            targetUserId,
+            fromUserId: this.userId,
+            offer
+          }
+        });
+      }
       
       this.emit('call_started');
     } catch (error) {
@@ -119,9 +147,8 @@ class CallService extends EventEmitter {
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.targetUserId) {
-        this.send({
+        this.sendSignal(this.targetUserId, {
           type: 'candidate',
-          targetUserId: this.targetUserId,
           candidate: event.candidate
         });
       }
@@ -153,12 +180,25 @@ class CallService extends EventEmitter {
     }
   }
 
-  async answerCall() {
-    if (!this.pc || !this.targetUserId) return;
+  async answerCall(offer: RTCSessionDescriptionInit) {
+    if (!this.targetUserId) return;
     
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      
       this.setupPeerConnection();
+      
+      await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      
+      this.sendSignal(this.targetUserId, {
+        type: 'answer',
+        answer
+      });
       
       this.emit('call_accepted');
     } catch (error) {
@@ -183,8 +223,10 @@ class CallService extends EventEmitter {
 
   disconnect() {
     this.cleanup();
-    this.ws?.close();
-    this.ws = null;
+    if (this.channel) {
+      this.channel.unsubscribe();
+      this.channel = null;
+    }
   }
 }
 
