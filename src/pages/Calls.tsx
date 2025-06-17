@@ -28,7 +28,6 @@ const Calls = () => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const timerRef = useRef<number | null>(null);
 
-  // Получаем текущего пользователя
   useEffect(() => {
     const fetchCurrentUser = async () => {
       const { data } = await supabase.auth.getUser();
@@ -48,7 +47,6 @@ const Calls = () => {
     };
   }, []);
 
-  // Обновляем состояние звонка
   useEffect(() => {
     const handleCallStarted = () => {
       setCallStatus("calling");
@@ -72,22 +70,21 @@ const Calls = () => {
     };
     
     const handleStreamChanged = () => {
-      if (audioRef.current && callService.getState().remoteStream) {
-        audioRef.current.srcObject = callService.getState().remoteStream;
+      const state = callService.getState();
+      if (audioRef.current && state.remoteStream) {
+        audioRef.current.srcObject = state.remoteStream;
         audioRef.current.play().catch(error => {
           console.error("Ошибка воспроизведения аудио:", error);
         });
       }
     };
     
-    // Подписываемся на события
     callService.on('call_started', handleCallStarted);
     callService.on('call_accepted', handleCallAccepted);
     callService.on('call_ended', handleCallEnded);
     callService.on('stream_changed', handleStreamChanged);
     
     return () => {
-      // Отписываемся от событий
       callService.off('call_started', handleCallStarted);
       callService.off('call_accepted', handleCallAccepted);
       callService.off('call_ended', handleCallEnded);
@@ -95,7 +92,6 @@ const Calls = () => {
     };
   }, [navigate]);
 
-  // Находим контакт по ID из URL и начинаем звонок
   useEffect(() => {
     const fetchContact = async () => {
       if (contactId) {
@@ -116,7 +112,6 @@ const Calls = () => {
               avatar_url: data.avatar_url
             });
             
-            // Начинаем звонок
             if (currentUserId) {
               try {
                 await callService.startCall(data.id);
@@ -140,20 +135,14 @@ const Calls = () => {
     }
   }, [contactId, currentUserId]);
 
-  // Запускаем таймер для отслеживания длительности звонка
   const startCallTimer = () => {
     setCallDuration(0);
-    
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-    
+    if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = window.setInterval(() => {
       setCallDuration(prev => prev + 1);
     }, 1000);
   };
 
-  // Останавливаем таймер
   const stopCallTimer = () => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -161,14 +150,12 @@ const Calls = () => {
     }
   };
 
-  // Форматируем длительность звонка
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Включение/выключение микрофона
   const toggleMute = () => {
     const state = callService.getState();
     if (state.localStream) {
@@ -176,17 +163,16 @@ const Calls = () => {
         track.enabled = !track.enabled;
       });
       setIsMuted(!state.localStream.getAudioTracks()[0].enabled);
+      toast.info(isMuted ? "Микрофон включен" : "Микрофон выключен");
     }
   };
 
-  // Завершение звонка
   const endCall = () => {
     callService.endCall();
   };
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
-      {/* Navbar */}
       <header className="flex items-center justify-between py-4 px-6 border-b">
         <h1 className="text-xl font-bold cursor-pointer" onClick={() => navigate("/dashboard")}>
           <span className="text-black">Task</span>
@@ -202,10 +188,8 @@ const Calls = () => {
         </div>
       </header>
 
-      {/* Скрытый аудио элемент для проигрывания удаленного потока */}
       <audio ref={audioRef} autoPlay playsInline />
 
-      {/* Интерфейс звонка */}
       <main className="flex-1 flex items-center justify-center p-6 bg-gray-50">
         <Card className="w-full max-w-md p-6 text-center">
           {activeContact ? (
