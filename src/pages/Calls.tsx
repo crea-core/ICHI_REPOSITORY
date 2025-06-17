@@ -6,7 +6,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { MessageCircle, Phone, PhoneCall, Bell, VolumeX } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { useCallService, CallState } from "@/services/CallService";
+import { useCallService } from "@/services/CallService";
 
 interface Contact {
   id: string;
@@ -25,7 +25,6 @@ const Calls = () => {
   const navigate = useNavigate();
   const callService = useCallService();
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [callState, setCallState] = useState<CallState>(callService.getState());
   const audioRef = useRef<HTMLAudioElement>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -35,31 +34,34 @@ const Calls = () => {
       const { data } = await supabase.auth.getUser();
       if (data.user) {
         setCurrentUserId(data.user.id);
+        callService.connect(data.user.id).catch(error => {
+          console.error("Ошибка подключения к звонкам:", error);
+          toast.error("Не удалось подключиться к сервису звонков");
+        });
       }
     };
     
     fetchCurrentUser();
+    
+    return () => {
+      callService.disconnect();
+    };
   }, []);
 
   // Обновляем состояние звонка
   useEffect(() => {
-    const handleCallStarted = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
+    const handleCallStarted = () => {
       setCallStatus("calling");
+      toast.info("Вызов начат...");
     };
     
-    const handleCallAccepted = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
+    const handleCallAccepted = () => {
       setCallStatus("connected");
       startCallTimer();
-      toast.success("Звонок подключен");
+      toast.success("Звонок подключен!");
     };
     
-    const handleCallEnded = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
+    const handleCallEnded = () => {
       setCallStatus("ended");
       stopCallTimer();
       toast.info("Звонок завершен");
@@ -70,20 +72,31 @@ const Calls = () => {
       }, 2000);
     };
     
+    const handleStreamChanged = () => {
+      if (audioRef.current && callService.getState().remoteStream) {
+        audioRef.current.srcObject = callService.getState().remoteStream;
+        audioRef.current.play().catch(error => {
+          console.error("Ошибка воспроизведения аудио:", error);
+        });
+      }
+    };
+    
     // Подписываемся на события
-    callService.addEventListener('call_started', handleCallStarted);
-    callService.addEventListener('call_accepted', handleCallAccepted);
-    callService.addEventListener('call_ended', handleCallEnded);
+    callService.on('call_started', handleCallStarted);
+    callService.on('call_accepted', handleCallAccepted);
+    callService.on('call_ended', handleCallEnded);
+    callService.on('stream_changed', handleStreamChanged);
     
     return () => {
       // Отписываемся от событий
-      callService.removeEventListener('call_started', handleCallStarted);
-      callService.removeEventListener('call_accepted', handleCallAccepted);
-      callService.removeEventListener('call_ended', handleCallEnded);
+      callService.off('call_started', handleCallStarted);
+      callService.off('call_accepted', handleCallAccepted);
+      callService.off('call_ended', handleCallEnded);
+      callService.off('stream_changed', handleStreamChanged);
     };
   }, [navigate]);
 
-  // Находим контакт по ID из URL
+  // Находим контакт по ID из URL и начинаем звонок
   useEffect(() => {
     const fetchContact = async () => {
       if (contactId) {
@@ -107,16 +120,20 @@ const Calls = () => {
             });
             
             // Начинаем звонок, если найден контакт
-            if (currentUserId && !callService.getState().isInCall) {
-              callService.startCall(data.id).catch(error => {
+            if (currentUserId) {
+              try {
+                await callService.startCall(data.id);
+              } catch (error) {
                 console.error('Ошибка при звонке:', error);
                 toast.error('Не удалось начать звонок');
-              });
+                setTimeout(() => navigate("/chat"), 2000);
+              }
             }
           }
         } catch (error) {
           console.error('Ошибка при получении данных контакта:', error);
           toast.error('Не удалось загрузить информацию о контакте');
+          setTimeout(() => navigate("/chat"), 2000);
         }
       }
     };
@@ -125,13 +142,6 @@ const Calls = () => {
       fetchContact();
     }
   }, [contactId, currentUserId]);
-
-  // Подключаем удаленный аудиопоток
-  useEffect(() => {
-    if (audioRef.current && callState.remoteStream) {
-      audioRef.current.srcObject = callState.remoteStream;
-    }
-  }, [callState.remoteStream]);
 
   // Запускаем таймер для отслеживания длительности звонка
   const startCallTimer = () => {
@@ -163,12 +173,12 @@ const Calls = () => {
 
   // Включение/выключение микрофона
   const toggleMute = () => {
-    if (callState.localStream) {
-      callState.localStream.getAudioTracks().forEach(track => {
-        track.enabled = isMuted; // Инвертируем текущее состояние
+    const state = callService.getState();
+    if (state.localStream) {
+      state.localStream.getAudioTracks().forEach(track => {
+        track.enabled = !track.enabled; // Инвертируем текущее состояние
       });
-      
-      setIsMuted(!isMuted);
+      setIsMuted(!state.localStream.getAudioTracks()[0].enabled);
     }
   };
 
@@ -196,7 +206,7 @@ const Calls = () => {
       </header>
 
       {/* Скрытый аудио элемент для проигрывания удаленного потока */}
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} autoPlay playsInline />
 
       {/* Интерфейс звонка */}
       <main className="flex-1 flex items-center justify-center p-6 bg-gray-50">
@@ -242,15 +252,7 @@ const Calls = () => {
                         className="rounded-full w-12 h-12"
                         onClick={toggleMute}
                       >
-                        <VolumeX className="h-5 w-5" />
-                      </Button>
-                      
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className="rounded-full w-12 h-12"
-                      >
-                        <MessageCircle className="h-5 w-5" />
+                        {isMuted ? <VolumeX className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}
                       </Button>
                       
                       <Button
@@ -270,17 +272,17 @@ const Calls = () => {
               <div className="mt-12 text-sm text-left p-4 bg-gray-100 rounded-lg">
                 <h3 className="font-medium mb-2">Техническая информация:</h3>
                 <p>
-                  Реализованы голосовые звонки с использованием WebRTC и WebSockets через Supabase Edge Functions.
-                  WebRTC позволяет установить прямое peer-to-peer соединение между браузерами для передачи аудио.
+                  Реализованы голосовые звонки с использованием WebRTC и PeerJS.
+                  PeerJS обеспечивает простое peer-to-peer соединение между браузерами для передачи аудио.
                 </p>
                 <p className="mt-2">
-                  Процесс включает:
+                  Преимущества решения:
                 </p>
                 <ul className="list-disc pl-5 mt-1 space-y-1">
-                  <li>Установление WebSocket-соединения через Supabase Edge Function</li>
-                  <li>Обмен SDP-предложениями через сигнальный сервер</li>
-                  <li>Установление прямого соединения между браузерами с помощью ICE-кандидатов</li>
-                  <li>Передачу аудиопотоков с использованием getUserMedia API</li>
+                  <li>Прямое соединение между пользователями без промежуточных серверов</li>
+                  <li>Минимальная задержка аудио</li>
+                  <li>Автоматическая обработка NAT traversal с помощью STUN</li>
+                  <li>Простая интеграция с React приложением</li>
                 </ul>
               </div>
             </>
