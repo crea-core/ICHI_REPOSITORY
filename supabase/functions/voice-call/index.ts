@@ -1,35 +1,46 @@
-// supabase/functions/voice-call/index.ts
-import { serve } from 'std/server';
-import { WebSocketHandler } from 'ws/mod.ts';
+// ЗАМЕНИТЬ ВЕСЬ ФАЙЛ НА:
+import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 
-interface Peer {
-  userId: string;
-  socket: WebSocket;
-}
-
-const peers = new Map<string, Peer>();
+const peers = new Map<string, WebSocket>();
 
 serve(async (req) => {
-  const { searchParams } = new URL(req.url);
-  const userId = searchParams.get('userId');
-
-  if (!userId) {
-    return new Response('Missing userId', { status: 400 });
+  const { searchParams, pathname } = new URL(req.url);
+  
+  // Разрешить CORS для веб-сокетов
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
   }
+
+  if (pathname !== "/voice-call") {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const userId = searchParams.get("userId");
+  if (!userId) return new Response("Missing userId", { status: 400 });
 
   const { socket, response } = Deno.upgradeWebSocket(req);
 
   socket.onopen = () => {
-    peers.set(userId, { userId, socket });
+    peers.set(userId, socket);
     console.log(`✅ ${userId} connected`);
   };
 
   socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    const target = peers.get(data.targetUserId);
-
-    if (target) {
-      target.socket.send(JSON.stringify({ ...data, fromUserId: userId }));
+    try {
+      const data = JSON.parse(event.data);
+      const target = peers.get(data.targetUserId);
+      
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(JSON.stringify({ ...data, fromUserId: userId }));
+      }
+    } catch (error) {
+      console.error("Error handling message:", error);
     }
   };
 
@@ -38,8 +49,8 @@ serve(async (req) => {
     console.log(`❌ ${userId} disconnected`);
   };
 
-  socket.onerror = (err) => {
-    console.error('WebSocket error:', err);
+  socket.onerror = (error) => {
+    console.error("WebSocket error:", error);
   };
 
   return response;
