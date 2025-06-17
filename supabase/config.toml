@@ -1,1 +1,5 @@
 project_id = "zklavsvtcnrcozsgmchq"
+
+[function]
+name = "voice-call"
+verify_jwt = false
