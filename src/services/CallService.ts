@@ -3,13 +3,13 @@ export interface CallState {
   connectionState: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
+  incomingCall: { fromUserId: string } | null;
 }
 
 interface CallServiceOptions {
-  onIncomingCall?: (fromUserId: string, offer: RTCSessionDescriptionInit) => void;
-  onCallAnswer?: (fromUserId: string, answer: RTCSessionDescriptionInit, accepted: boolean) => void;
-  onCallEnded?: (fromUserId: string) => void;
-  onConnectionStatusChange?: (status: string) => void;
+  onIncomingCall?: (fromUserId: string) => void;
+  onCallAnswered?: () => void;
+  onCallEnded?: () => void;
 }
 
 class CallService extends EventTarget {
@@ -19,13 +19,12 @@ class CallService extends EventTarget {
   private remoteStream: MediaStream | null = null;
   private userId: string | null = null;
   private options: CallServiceOptions = {};
-  private isConnected = false;
-
   private currentCallState: CallState = {
     isInCall: false,
     connectionState: 'disconnected',
     localStream: null,
-    remoteStream: null
+    remoteStream: null,
+    incomingCall: null
   };
 
   constructor(options: CallServiceOptions = {}) {
@@ -33,51 +32,21 @@ class CallService extends EventTarget {
     this.options = options;
   }
 
-  getState(): CallState {
-    return this.currentCallState;
-  }
-
-  private updateState(updates: Partial<CallState>) {
-    this.currentCallState = { ...this.currentCallState, ...updates };
-    this.dispatchEvent(new CustomEvent('state_changed', { detail: this.getState() }));
-  }
-
-  private sendMessage(data: any) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
-    }
-  }
-
   async connect(userId: string): Promise<void> {
     this.userId = userId;
-    if (this.ws) return;
+    const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/functions/v1/voice-call?userId=${userId}`;
+    
+    this.ws = new WebSocket(wsUrl);
+    
+    this.ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      this.handleMessage(message);
+    };
 
-    return new Promise((resolve, reject) => {
-      const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/functions/v1/voice-call?userId=${userId}`;
-      this.ws = new WebSocket(wsUrl);
-
-      this.ws.onopen = () => {
-        this.isConnected = true;
+    return new Promise((resolve) => {
+      this.ws!.onopen = () => {
         this.updateState({ connectionState: 'connected' });
         resolve();
-      };
-
-      this.ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          this.handleMessage(message);
-        } catch (error) {
-          console.error('Message parse error:', error);
-        }
-      };
-
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        reject(error);
-      };
-
-      this.ws.onclose = () => {
-        this.updateState({ connectionState: 'disconnected' });
       };
     });
   }
@@ -85,161 +54,151 @@ class CallService extends EventTarget {
   private handleMessage(message: any) {
     switch (message.type) {
       case 'incoming_call':
-        this.handleIncomingCall(message.fromUserId, message.offer);
+        this.showIncomingCall(message.fromUserId, message.offer);
         break;
       case 'call_answered':
-        this.handleAnswer(message.fromUserId, message.answer, message.accepted);
+        if (message.accepted) {
+          this.handleCallAccepted(message.answer);
+        } else {
+          this.handleCallRejected();
+        }
         break;
       case 'ice_candidate':
-        this.handleIceCandidate(message.candidate);
+        this.addIceCandidate(message.candidate);
         break;
     }
   }
 
-  private async handleIncomingCall(fromUserId: string, offer: RTCSessionDescriptionInit) {
-    this.options.onIncomingCall?.(fromUserId, offer);
-  }
-
-  private async handleAnswer(fromUserId: string, answer: RTCSessionDescriptionInit, accepted: boolean) {
-    if (accepted && answer && this.peerConnection) {
-      await this.peerConnection.setRemoteDescription(answer);
-      this.updateState({ connectionState: 'connected' });
-    }
-  }
-
-  private async handleIceCandidate(candidate: RTCIceCandidateInit) {
-    if (this.peerConnection) {
-      try {
-        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error('Error adding ICE candidate:', err);
-      }
-    }
+  private showIncomingCall(fromUserId: string, offer: RTCSessionDescriptionInit) {
+    this.updateState({ incomingCall: { fromUserId } });
+    this.options.onIncomingCall?.(fromUserId);
+    
+    // Сохраняем offer для последующего принятия
+    this.peerConnection = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
   }
 
   async startCall(targetUserId: string): Promise<void> {
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.updateState({ localStream: this.localStream });
+    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    this.peerConnection = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
 
-      this.peerConnection = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
+    this.setupPeerConnection(targetUserId);
+    
+    const offer = await this.peerConnection.createOffer();
+    await this.peerConnection.setLocalDescription(offer);
+    
+    this.ws?.send(JSON.stringify({
+      type: 'call_offer',
+      targetUserId,
+      offer
+    }));
 
-      this.peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          this.sendMessage({
-            type: 'ice_candidate',
-            targetUserId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      this.peerConnection.ontrack = (event) => {
-        this.remoteStream = event.streams[0];
-        this.updateState({ remoteStream: this.remoteStream });
-      };
-
-      this.localStream.getTracks().forEach(track => {
-        this.peerConnection?.addTrack(track, this.localStream!);
-      });
-
-      const offer = await this.peerConnection.createOffer();
-      await this.peerConnection.setLocalDescription(offer);
-
-      this.sendMessage({
-        type: 'call_offer',
-        targetUserId,
-        offer
-      });
-
-      this.updateState({ isInCall: true, connectionState: 'connecting' });
-
-    } catch (error) {
-      console.error('Call start failed:', error);
-      this.cleanup();
-      throw error;
-    }
+    this.updateState({ isInCall: true, connectionState: 'connecting' });
   }
 
-  async answerCall(fromUserId: string, offer: RTCSessionDescriptionInit): Promise<void> {
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.updateState({ localStream: this.localStream });
+  async answerCall(): Promise<void> {
+    if (!this.currentCallState.incomingCall) return;
+    
+    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    this.peerConnection!.addTrack(this.localStream.getTracks()[0]);
+    
+    const answer = await this.peerConnection!.createAnswer();
+    await this.peerConnection!.setLocalDescription(answer);
+    
+    this.ws?.send(JSON.stringify({
+      type: 'call_answer',
+      targetUserId: this.currentCallState.incomingCall.fromUserId,
+      answer,
+      accepted: true
+    }));
 
-      this.peerConnection = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-
-      this.peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-          this.sendMessage({
-            type: 'ice_candidate',
-            targetUserId: fromUserId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      this.peerConnection.ontrack = (event) => {
-        this.remoteStream = event.streams[0];
-        this.updateState({ remoteStream: this.remoteStream });
-      };
-
-      this.localStream.getTracks().forEach(track => {
-        this.peerConnection?.addTrack(track, this.localStream!);
-      });
-
-      await this.peerConnection.setRemoteDescription(offer);
-      const answer = await this.peerConnection.createAnswer();
-      await this.peerConnection.setLocalDescription(answer);
-
-      this.sendMessage({
-        type: 'call_answer',
-        targetUserId: fromUserId,
-        answer,
-        accepted: true
-      });
-
-      this.updateState({ isInCall: true, connectionState: 'connected' });
-
-    } catch (error) {
-      console.error('Call answer failed:', error);
-      this.cleanup();
-      throw error;
-    }
+    this.updateState({ 
+      isInCall: true, 
+      connectionState: 'connected',
+      incomingCall: null 
+    });
   }
 
-  endCall(targetUserId?: string): void {
-    if (targetUserId) {
-      this.sendMessage({ type: 'end_call', targetUserId });
-    }
+  rejectCall(): void {
+    if (!this.currentCallState.incomingCall) return;
+    
+    this.ws?.send(JSON.stringify({
+      type: 'call_answer',
+      targetUserId: this.currentCallState.incomingCall.fromUserId,
+      accepted: false
+    }));
+
     this.cleanup();
   }
 
-  private cleanup(): void {
-    this.localStream?.getTracks().forEach(track => track.stop());
-    this.peerConnection?.close();
+  endCall(): void {
+    this.cleanup();
+  }
+
+  private handleCallAccepted(answer: RTCSessionDescriptionInit) {
+    this.peerConnection?.setRemoteDescription(new RTCSessionDescription(answer));
+    this.updateState({ connectionState: 'connected' });
+  }
+
+  private handleCallRejected() {
+    this.cleanup();
+  }
+
+  private addIceCandidate(candidate: RTCIceCandidateInit) {
+    this.peerConnection?.addIceCandidate(new RTCIceCandidate(candidate));
+  }
+
+  private setupPeerConnection(targetUserId: string) {
+    const pc = this.peerConnection!;
     
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.ws?.send(JSON.stringify({
+          type: 'ice_candidate',
+          targetUserId,
+          candidate: event.candidate
+        }));
+      }
+    };
+
+    pc.ontrack = (event) => {
+      this.remoteStream = event.streams[0];
+      this.updateState({ remoteStream: this.remoteStream });
+    };
+
+    pc.onconnectionstatechange = () => {
+      this.updateState({ connectionState: pc.connectionState });
+    };
+  }
+
+  private cleanup(): void {
+    this.peerConnection?.close();
+    this.localStream?.getTracks().forEach(track => track.stop());
+    
+    this.peerConnection = null;
     this.localStream = null;
     this.remoteStream = null;
-    this.peerConnection = null;
-
+    
     this.updateState({
       isInCall: false,
       connectionState: 'disconnected',
+      incomingCall: null,
       localStream: null,
       remoteStream: null
     });
   }
 
-  disconnect(): void {
-    this.cleanup();
-    this.ws?.close();
-    this.ws = null;
-    this.userId = null;
-    this.isConnected = false;
+  private updateState(updates: Partial<CallState>): void {
+    this.currentCallState = { ...this.currentCallState, ...updates };
+    this.dispatchEvent(new CustomEvent('state_changed', { detail: this.currentCallState }));
+  }
+
+  getState(): CallState {
+    return this.currentCallState;
   }
 }
 
