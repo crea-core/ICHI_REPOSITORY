@@ -37,6 +37,8 @@ serve((req) => {
     return new Response('Отсутствует userId в параметрах', { status: 400 });
   }
 
+  console.log(`Новое подключение от пользователя: ${userId}`);
+
   // Создаем WebSocket-соединение
   const { socket, response } = Deno.upgradeWebSocket(req);
   
@@ -51,13 +53,23 @@ serve((req) => {
       type: 'active_users',
       users: activeUsers
     }));
+
+    // Уведомляем всех остальных о новом пользователе
+    for (const [connUserId, connection] of connections) {
+      if (connUserId !== userId) {
+        connection.socket.send(JSON.stringify({
+          type: 'user_connected',
+          userId
+        }));
+      }
+    }
   };
 
   // Обработчик получения сообщения
   socket.onmessage = (event) => {
     try {
       const message = JSON.parse(event.data);
-      console.log(`Получено сообщение от ${userId}:`, message);
+      console.log(`Получено сообщение от ${userId}:`, message.type);
       
       switch (message.type) {
         case 'call_offer':
@@ -99,6 +111,7 @@ serve((req) => {
       if (peerConnection) {
         peerConnection.socket.send(JSON.stringify({
           type: 'call_ended',
+          fromUserId: userId,
           message: 'Собеседник отключился'
         }));
         peerConnection.peerId = null;
@@ -141,6 +154,8 @@ serve((req) => {
       if (fromConnection) {
         fromConnection.peerId = targetUserId;
       }
+      
+      console.log(`Предложение отправлено от ${fromUserId} к ${targetUserId}`);
     } else {
       // Пользователь не в сети
       const fromConnection = connections.get(fromUserId);
@@ -150,6 +165,7 @@ serve((req) => {
           message: 'Пользователь не в сети'
         }));
       }
+      console.log(`Пользователь ${targetUserId} не в сети`);
     }
   }
 
@@ -174,6 +190,8 @@ serve((req) => {
         if (fromConnection) {
           fromConnection.peerId = targetUserId;
         }
+        targetConnection.peerId = fromUserId;
+        console.log(`Соединение установлено между ${fromUserId} и ${targetUserId}`);
       }
     }
   }
