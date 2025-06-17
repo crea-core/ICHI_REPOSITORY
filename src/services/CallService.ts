@@ -1,3 +1,130 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient('https://zklavsvtcnrcozsgmchq.supabase.co/functions/v1/voice-call', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprbGF2c3Z0Y25yY296c2dtY2hxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc3MzU4ODQsImV4cCI6MjA2MzMxMTg4NH0.g_Sd37PapvRX98J8KCCoIEddQcwMJLN6vSBrEi4pzjM');
+
+interface CallState {
+  isInCall: boolean;
+  isCallActive: boolean;
+  isCallInitiator: boolean;
+  localStream: MediaStream | null;
+  remoteStream: MediaStream | null;
+  connectionState: RTCPeerConnectionState;
+  callStatus: 'idle' | 'connecting' | 'ringing' | 'active' | 'ended';
+}
+
+class VoiceCallService {
+  private peerConnection: RTCPeerConnection | null = null;
+  private localStream: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
+  private signalingChannel: any = null;
+  private currentCallId: string | null = null;
+  private state: CallState = {
+    isInCall: false,
+    isCallActive: false,
+    isCallInitiator: false,
+    localStream: null,
+    remoteStream: null,
+    connectionState: 'disconnected',
+    callStatus: 'idle'
+  };
+  private listeners: ((state: CallState) => void)[] = [];
+
+  constructor(private currentUserId: string) {
+    this.setupSignaling();
+  }
+
+  // Подписка на изменения состояния
+  subscribe(callback: (state: CallState) => void): () => void {
+    this.listeners.push(callback);
+    callback(this.state);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== callback);
+    };
+  }
+
+  private updateState(newState: Partial<CallState>): void {
+    this.state = { ...this.state, ...newState };
+    this.listeners.forEach(listener => listener(this.state));
+  }
+
+  // Инициализация сигнального канала
+  private setupSignaling(): void {
+    this.signalingChannel = supabase.channel('voice_calls');
+
+    this.signalingChannel
+      .on('broadcast', { event: 'call_offer' }, (payload: any) => {
+        if (payload.targetUserId === this.currentUserId) {
+          this.handleIncomingCall(payload.fromUserId, payload.offer);
+        }
+      })
+      .on('broadcast', { event: 'call_answer' }, (payload: any) => {
+        if (payload.targetUserId === this.currentUserId && payload.answer) {
+          this.handleAnswer(payload.answer);
+        }
+      })
+      .on('broadcast', { event: 'ice_candidate' }, (payload: any) => {
+        if (payload.targetUserId === this.currentUserId && payload.candidate) {
+          this.handleICECandidate(payload.candidate);
+        }
+      })
+      .on('broadcast', { event: 'call_ended' }, (payload: any) => {
+        if (payload.targetUserId === this.currentUserId) {
+          this.handleCallEnded();
+        }
+      })
+      .subscribe();
+  }
+
+  // Начало звонка
+  async startCall(targetUserId: string): Promise<void> {
+    try {
+      this.updateState({
+        isInCall: true,
+        isCallInitiator: true,
+        callStatus: 'ringing'
+      });
+
+      await this.setupLocalStream();
+      this.setupPeerConnection(targetUserId);
+
+      const offer = await this.peerConnection!.createOffer();
+      await this.peerConnection!.setLocalDescription(offer);
+
+      this.signalingChannel.send({
+        type: 'broadcast',
+        event: 'call_offer',
+        payload: {
+          targetUserId,
+          fromUserId: this.currentUserId,
+          offer
+        }
+      });
+
+      this.updateState({ callStatus: 'connecting' });
+    } catch (error) {
+      console.error('Call failed:', error);
+      this.cleanup();
+      throw error;
+    }
+  }
+
+  // Обработка входящего звонка
+  private async handleIncomingCall(fromUserId: string, offer: RTCSessionDescriptionInit): Promise<void> {
+    if (this.state.isInCall) return;
+
+    this.updateState({
+      isInCall: true,
+      isCallInitiator: false,
+      callStatus: 'ringing'
+    });
+
+    try {
+      await this.setupLocalStream();
+      this.setupPeerConnection(fromUserId);
+
+      await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await this.peerConnection!.createAnswer();
+      await this.peerConnection!.setLocalDescription(answer);
 this.signalingChannel.send({
         type: 'broadcast',
         event: 'call_answer',
