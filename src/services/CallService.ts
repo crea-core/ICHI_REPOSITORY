@@ -14,7 +14,7 @@ class CallService extends EventEmitter {
   private remoteStream: MediaStream | null = null;
   private userId: string | null = null;
   private targetUserId: string | null = null;
-  private signalingServer = "wss://your-websocket-server.com"; // Замените на свой сервер
+  private signalingServer = "wss://localhost:8080"; // ВАЖНО ПРИ ДЕПЛОЕ
 
   getState(): CallState {
     return {
