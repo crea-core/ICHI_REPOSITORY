@@ -34,7 +34,7 @@ class CallService extends EventEmitter {
     if (this.ws) this.ws.close();
 
     return new Promise((resolve, reject) => {
-      const wsUrl = `wss://YOUR_PROJECT_ID.functions.supabase.co/voice-call?userId=${this.userId}`;
+      const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/voice-call?userId=${this.userId}`;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
