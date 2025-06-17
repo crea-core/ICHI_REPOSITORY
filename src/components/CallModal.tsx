@@ -1,11 +1,9 @@
-
 import React, { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { PhoneOff, Phone, Mic, MicOff } from "lucide-react";
-import { useCallService, CallState } from "@/services/CallService";
-import { supabase } from "@/integrations/supabase/client";
+import { callService, CallState } from "@/services/CallService";
 import { toast } from "sonner";
 
 interface CallModalProps {
@@ -27,134 +25,100 @@ const CallModal: React.FC<CallModalProps> = ({
   onClose,
   incomingCallOffer
 }) => {
-  const callService = useCallService();
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [callState, setCallState] = useState<CallState>(callService.getState());
   const audioRef = useRef<HTMLAudioElement>(null);
-  const durationTimerRef = useRef<number | null>(null);
+  const durationTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Обновляем состояние звонка
+  // Update call state when it changes
   useEffect(() => {
-    const handleCallStarted = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
-      startCallTimer();
+    const handleStateChange = (state: CallState) => {
+      setCallState(state);
+      
+      if (state.callStatus === 'active') {
+        startCallTimer();
+      } else if (state.callStatus === 'ended') {
+        stopCallTimer();
+        setTimeout(onClose, 1000);
+      }
     };
-    
-    const handleCallEnded = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
-      stopCallTimer();
-      setTimeout(onClose, 1000); // Закрываем модальное окно через 1 секунду
-    };
-    
-    const handleConnectionStateChanged = (event: Event) => {
-      const customEvent = event as CustomEvent<CallState>;
-      setCallState(customEvent.detail);
-    };
-    
-    // Подписываемся на события
-    callService.addEventListener('call_started', handleCallStarted);
-    callService.addEventListener('call_accepted', handleCallStarted);
-    callService.addEventListener('call_ended', handleCallEnded);
-    callService.addEventListener('connection_state_changed', handleConnectionStateChanged);
-    
+
+    callService.on('state_changed', handleStateChange);
     return () => {
-      // Отписываемся от событий
-      callService.removeEventListener('call_started', handleCallStarted);
-      callService.removeEventListener('call_accepted', handleCallStarted);
-      callService.removeEventListener('call_ended', handleCallEnded);
-      callService.removeEventListener('connection_state_changed', handleConnectionStateChanged);
+      callService.off('state_changed', handleStateChange);
     };
   }, [onClose]);
 
-  // Подключаем удаленный аудиопоток
+  // Handle remote audio stream
   useEffect(() => {
     if (audioRef.current && callState.remoteStream) {
       audioRef.current.srcObject = callState.remoteStream;
     }
   }, [callState.remoteStream]);
-  
-  // Инициируем звонок при открытии модального окна
+
+  // Initiate call when modal opens for outgoing calls
   useEffect(() => {
     if (isOpen && contactId && !isIncoming && !callState.isInCall) {
       initiateCall();
     }
-  }, [isOpen, contactId, isIncoming]);
-  
-  // Очищаем ресурсы при закрытии модального окна
+  }, [isOpen, contactId, isIncoming, callState.isInCall]);
+
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (callState.isInCall) {
-        callService.endCall();
+        callService.endCall(contactId  undefined);
       }
-      
-      if (durationTimerRef.current) {
-        stopCallTimer();
-      }
+      stopCallTimer();
     };
-  }, []);
+  }, [callState.isInCall, contactId]);
 
-  // Инициируем исходящий звонок
   const initiateCall = async () => {
     if (!contactId) return;
     
     try {
       await callService.startCall(contactId);
-      toast.success(`Звоним ${contactName}...`);
+      toast.success(`Calling ${contactName}...`);
     } catch (error) {
-      console.error('Ошибка инициации звонка:', error);
-      toast.error('Не удалось начать звонок');
+      console.error('Call initiation failed:', error);
+      toast.error('Failed to start call');
       onClose();
     }
   };
 
-  // Отвечаем на входящий звонок
   const answerCall = async (accept: boolean) => {
-    if (!contactId || !incomingCallOffer) return;
+    if (!contactId  !incomingCallOffer) return;
     
     try {
       await callService.answerCall(contactId, incomingCallOffer, accept);
       
       if (accept) {
-        toast.success(`Звонок с ${contactName} начат`);
+        toast.success(Call with ${contactName} started);
       } else {
-        toast.info(`Звонок от ${contactName} отклонен`);
+        toast.info(Call from ${contactName} declined);
         onClose();
       }
     } catch (error) {
-      console.error('Ошибка ответа на звонок:', error);
-      toast.error('Ошибка при ответе на звонок');
+      console.error('Error answering call:', error);
+      toast.error('Failed to answer call');
       onClose();
     }
   };
 
-  // Завершаем звонок
   const endCall = () => {
-    callService.endCall();
+    callService.endCall(contactId || undefined);
   };
 
-  // Включаем/выключаем микрофон
   const toggleMute = () => {
-    if (callState.localStream) {
-      callState.localStream.getAudioTracks().forEach(track => {
-        track.enabled = isMuted; // Инвертируем состояние
-      });
-      
-      setIsMuted(!isMuted);
-    }
+    const newMuteState = callService.toggleMute();
+    setIsMuted(newMuteState);
   };
 
-  // Запускаем таймер для отслеживания длительности звонка
   const startCallTimer = () => {
     setCallDuration(0);
-    
-    if (durationTimerRef.current) {
-      clearInterval(durationTimerRef.current);
-    }
-    
-    durationTimerRef.current = window.setInterval(() => {
+    stopCallTimer();
+    durationTimerRef.current = setInterval(() => {
       setCallDuration(prev => prev + 1);
     }, 1000);
   };
@@ -169,25 +133,24 @@ const CallModal: React.FC<CallModalProps> = ({
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return ${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')};
   };
-
-  const getCallStatus = (): string => {
-    if (!callState.isInCall) return isIncoming ? "Входящий звонок..." : "Вызов...";
+const getCallStatus = (): string => {
+    if (!callState.isInCall) return isIncoming ? "Incoming call..." : "Calling...";
     
-    if (callState.connectionState === 'connected') {
-      return "Разговор";
+    switch (callState.connectionState) {
+      case 'connected':
+        return "In call";
+      case 'connecting':
+      case 'new':
+        return "Connecting...";
+      case 'disconnected':
+      case 'failed':
+      case 'closed':
+        return "Call ended";
+      default:
+        return "Calling...";
     }
-    
-    if (callState.connectionState === 'connecting' || callState.connectionState === 'new') {
-      return "Соединение...";
-    }
-    
-    if (callState.connectionState === 'disconnected' || callState.connectionState === 'failed' || callState.connectionState === 'closed') {
-      return "Звонок завершен";
-    }
-    
-    return "Вызов...";
   };
 
   return (
@@ -217,14 +180,11 @@ const CallModal: React.FC<CallModalProps> = ({
             )}
           </div>
           
-          {/* Скрытый аудио элемент для проигрывания удаленного потока */}
-          <audio ref={audioRef} autoPlay />
+          <audio ref={audioRef} autoPlay playsInline />
           
           <div className="flex justify-center gap-4">
-            {/* Кнопки для управления звонком */}
             {isIncoming && !callState.isInCall ? (
               <>
-                {/* Кнопки для входящего звонка */}
                 <Button 
                   variant="destructive" 
                   size="icon"
@@ -245,7 +205,6 @@ const CallModal: React.FC<CallModalProps> = ({
               </>
             ) : (
               <>
-                {/* Кнопки для активного звонка */}
                 <Button 
                   variant={isMuted ? "default" : "outline"} 
                   size="icon"
