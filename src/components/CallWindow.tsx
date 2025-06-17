@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { PhoneOff, Mic, MicOff, Minimize2, X } from "lucide-react";
+import { PhoneOff, Mic, MicOff, Minimize2, X, Phone } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { callService } from "@/services/CallService";
 import { toast } from "sonner";
@@ -13,7 +13,6 @@ interface CallWindowProps {
   contactName: string;
   contactAvatar: string | null;
   isIncoming: boolean;
-  incomingCallOffer?: RTCSessionDescriptionInit;
   onClose: () => void;
 }
 
@@ -23,7 +22,6 @@ const CallWindow: React.FC<CallWindowProps> = ({
   contactName,
   contactAvatar,
   isIncoming,
-  incomingCallOffer,
   onClose
 }) => {
   const [callDuration, setCallDuration] = useState(0);
@@ -45,7 +43,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   useEffect(() => {
     if (!isIncoming && isOpen) {
       callService.startCall(contactId).catch(error => {
-        toast.error('Failed to start call');
+        toast.error('Failed to start call: ' + error.message);
         onClose();
       });
     }
@@ -57,7 +55,6 @@ const CallWindow: React.FC<CallWindowProps> = ({
       'call_started',
       'call_accepted',
       'call_ended',
-      'state_changed',
       'stream_changed'
     ];
 
@@ -73,9 +70,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   }, []);
 
   const answerCall = (accept: boolean) => {
-    if (!incomingCallOffer) return;
-    
-    callService.answerCall(contactId, incomingCallOffer, accept)
+    callService.answerCall(accept)
       .catch(() => {
         toast.error(accept ? 'Failed to answer call' : 'Failed to reject call');
         onClose();
@@ -83,7 +78,7 @@ const CallWindow: React.FC<CallWindowProps> = ({
   };
 
   const endCall = () => {
-    callService.endCall(contactId);
+    callService.endCall();
     onClose();
   };
 
