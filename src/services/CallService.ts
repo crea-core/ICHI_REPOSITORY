@@ -1,5 +1,4 @@
 import { EventEmitter } from 'eventemitter3';
-import Peer from 'peerjs';
 
 export interface CallState {
   isInCall: boolean;
@@ -8,9 +7,16 @@ export interface CallState {
   remoteStream: MediaStream | null;
 }
 
+// Загружаем PeerJS из CDN
+declare global {
+  interface Window {
+    Peer: any;
+  }
+}
+
 class CallService extends EventEmitter {
-  private peer: Peer | null = null;
-  private currentCall: Peer.MediaConnection | null = null;
+  private peer: any = null;
+  private currentCall: any = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private userId: string | null = null;
@@ -26,9 +32,20 @@ class CallService extends EventEmitter {
 
   async connect(userId: string): Promise<void> {
     this.userId = userId;
+    
+    // Динамическая загрузка PeerJS из CDN
+    if (typeof window.Peer === 'undefined') {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load PeerJS'));
+        document.head.appendChild(script);
+      });
+    }
+
     return new Promise((resolve, reject) => {
-      // Используем публичный сервер PeerJS
-      this.peer = new Peer(userId, {
+      this.peer = new window.Peer(userId, {
         host: '0.peerjs.com',
         port: 443,
         secure: true,
@@ -39,12 +56,11 @@ class CallService extends EventEmitter {
         resolve();
       });
 
-      this.peer.on('error', (error) => {
+      this.peer.on('error', (error: any) => {
         reject(error);
       });
 
-      // Обработка входящего звонка
-      this.peer.on('call', (call) => {
+      this.peer.on('call', (call: any) => {
         this.currentCall = call;
         this.emit('incoming_call', { fromUserId: call.peer });
       });
@@ -52,14 +68,14 @@ class CallService extends EventEmitter {
   }
 
   async startCall(targetUserId: string): Promise<void> {
-    if (!this.peer) throw new Error('Peer not initialized');
-
+    this.cleanup();
+    
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const call = this.peer.call(targetUserId, this.localStream);
       this.currentCall = call;
 
-      call.on('stream', (remoteStream) => {
+      call.on('stream', (remoteStream: MediaStream) => {
         this.remoteStream = remoteStream;
         this.emit('stream_changed');
       });
@@ -89,7 +105,7 @@ class CallService extends EventEmitter {
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.currentCall.answer(this.localStream);
 
-      this.currentCall.on('stream', (remoteStream) => {
+      this.currentCall.on('stream', (remoteStream: MediaStream) => {
         this.remoteStream = remoteStream;
         this.emit('stream_changed');
       });
