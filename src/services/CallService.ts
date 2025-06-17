@@ -34,7 +34,8 @@ class CallService extends EventEmitter {
     if (this.ws) this.ws.close();
 
     return new Promise((resolve, reject) => {
-      const wsUrl = `wss://zklavsvtcnrcozsgmchq.supabase.co/voice-call?userId=${this.userId}`;
+      // Замените YOUR_PROJECT_ID на реальный ID проекта Supabase
+      const wsUrl = `wss://YOUR_PROJECT_ID.functions.supabase.co/voice-call?userId=${this.userId}`;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -93,7 +94,7 @@ class CallService extends EventEmitter {
         break;
 
       case 'call_ended':
-        case 'call_failed':
+      case 'call_failed':
         this.cleanup();
         this.emit(message.type);
         break;
@@ -214,3 +215,6 @@ class CallService extends EventEmitter {
 }
 
 export const callService = new CallService();
+
+// Добавлен экспорт useCallService для решения ошибки
+export const useCallService = () => callService;
