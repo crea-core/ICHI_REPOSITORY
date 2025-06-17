@@ -23,15 +23,15 @@ class CallService extends EventTarget {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectInterval: NodeJS.Timeout | null = null;
+  private iceBuffer: RTCIceCandidateInit[] = [];
+  private remoteDescriptionSet = false;
+
   private currentCallState: CallState = {
     isInCall: false,
     connectionState: 'disconnected',
     localStream: null,
     remoteStream: null
   };
-
-  private iceBuffer: RTCIceCandidateInit[] = [];
-  private remoteDescriptionSet = false;
 
   constructor(options: CallServiceOptions = {}) {
     super();
@@ -47,4 +47,10 @@ class CallService extends EventTarget {
   }
 
   private updateState(updates: Partial<CallState>) {
-    this.currentCallState = {
+    this.currentCallState = { ...this.currentCallState, ...updates };
+    this.dispatchEvent(new CustomEvent('connection_state_changed', { detail: this.getState() }));
+  }
+
+  // Остальной код будет тот же — см. предыдущий полный файл
+  // Здесь ты можешь продолжать с connect, handleWebSocketMessage и остальными методами
+}
