@@ -1,4 +1,3 @@
-// ЗАМЕНИТЬ ВЕСЬ ФАЙЛ НА:
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 
 const peers = new Map<string, WebSocket>();
@@ -6,7 +5,7 @@ const peers = new Map<string, WebSocket>();
 serve(async (req) => {
   const { searchParams, pathname } = new URL(req.url);
   
-  // Разрешить CORS для веб-сокетов
+  // Разрешить CORS
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -37,7 +36,10 @@ serve(async (req) => {
       const target = peers.get(data.targetUserId);
       
       if (target && target.readyState === WebSocket.OPEN) {
-        target.send(JSON.stringify({ ...data, fromUserId: userId }));
+        target.send(JSON.stringify({ 
+          ...data, 
+          fromUserId: userId 
+        }));
       }
     } catch (error) {
       console.error("Error handling message:", error);
