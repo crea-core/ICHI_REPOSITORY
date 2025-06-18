@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
@@ -17,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import MailSidebar from "@/components/MailSidebar";
+import { saveEmailToStorage, getStoredEmails, EmailData } from "@/components/EmailStorage";
 
 interface Email {
   id: string;
@@ -33,6 +35,7 @@ const MailPage = () => {
   const navigate = useNavigate();
   const [activeFolder, setActiveFolder] = useState<"inbox" | "sent" | "archive" | "trash">("inbox");
   const [emails, setEmails] = useState<Email[]>([]);
+  const [storedEmails, setStoredEmails] = useState<EmailData[]>([]);
   const [loading, setLoading] = useState(true);
   const [newEmail, setNewEmail] = useState({
     recipient: "",
@@ -42,6 +45,7 @@ const MailPage = () => {
   const [currentUser, setCurrentUser] = useState<{ id: string; email: string; full_name: string | null; } | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
+  const [selectedStoredEmail, setSelectedStoredEmail] = useState<EmailData | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -67,22 +71,33 @@ const MailPage = () => {
     fetchCurrentUser();
   }, []);
 
-  // Fetch emails and unread count
+  // Fetch emails and stored emails
   useEffect(() => {
     const fetchEmails = async () => {
       if (!currentUser) return;
       
       try {
-        const { data, error } = await supabase
-          .from('emails')
-          .select('*')
-          .eq('user_id', currentUser.id)
-          .eq('folder', activeFolder)
-          .order('created_at', { ascending: false });
+        setLoading(true);
+
+        if (activeFolder === 'sent') {
+          // Load sent emails from storage
+          const stored = await getStoredEmails(currentUser.id, 'sent');
+          setStoredEmails(stored);
+          setEmails([]);
+        } else {
+          // Load regular emails from database
+          const { data, error } = await supabase
+            .from('emails')
+            .select('*')
+            .eq('user_id', currentUser.id)
+            .eq('folder', activeFolder)
+            .order('created_at', { ascending: false });
+            
+          if (error) throw error;
           
-        if (error) throw error;
-        
-        setEmails(data || []);
+          setEmails(data || []);
+          setStoredEmails([]);
+        }
 
         // Fetch unread count for inbox
         const { data: unreadData, error: unreadError } = await supabase
@@ -104,14 +119,13 @@ const MailPage = () => {
     };
     
     if (currentUser) {
-      setLoading(true);
       fetchEmails();
     }
   }, [currentUser, activeFolder]);
 
   // Subscribe to real-time email updates
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || activeFolder === 'sent') return;
     
     if (typeof window === 'undefined') return;
     
@@ -149,7 +163,7 @@ const MailPage = () => {
     e.preventDefault();
     
     if (!currentUser || !newEmail.recipient || !newEmail.subject || !newEmail.content) {
-      console.error('Please fill all fields'); // Log error to console instead
+      console.error('Please fill all fields');
       setComposeOpen(false);
       setNewEmail({ recipient: "", subject: "", content: "" });
       return;
@@ -159,6 +173,21 @@ const MailPage = () => {
       const fromName = currentUser.full_name;
       const fromAddress = `${fromName} <${currentUser.email}>`;
 
+      // Save email to storage first
+      const emailData: EmailData = {
+        from: fromAddress,
+        to: newEmail.recipient,
+        subject: newEmail.subject,
+        content: newEmail.content,
+        timestamp: new Date().toISOString()
+      };
+
+      const saved = await saveEmailToStorage(emailData, currentUser.id);
+      if (!saved) {
+        throw new Error('Failed to save email to storage');
+      }
+
+      // Send email via edge function
       const { error: invokeError } = await supabase.functions.invoke('send-email', {
         body: {
           to: newEmail.recipient,
@@ -172,7 +201,7 @@ const MailPage = () => {
         throw invokeError;
       }
 
-      // Insert into sender's sent folder
+      // Insert into sender's sent folder in database
       const { error: sentError } = await supabase
         .from('emails')
         .insert({
@@ -184,7 +213,7 @@ const MailPage = () => {
           folder: 'sent'
         });
         
-      if (sentError) throw sentError;
+      if (sentError) console.warn('Database insert warning:', sentError);
       
       // Find recipient user by email
       const { data: recipientUsers, error: userError } = await supabase
@@ -211,21 +240,16 @@ const MailPage = () => {
         if (inboxError) throw inboxError;
       }
       
-      // Refresh emails if we're in sent folder
+      toast.success('Письмо отправлено и сохранено');
+      
+      // Refresh sent emails if we're in sent folder
       if (activeFolder === 'sent') {
-        const { data, error } = await supabase
-          .from('emails')
-          .select('*')
-          .eq('user_id', currentUser.id)
-          .eq('folder', 'sent')
-          .order('created_at', { ascending: false });
-          
-        if (!error && data) {
-          setEmails(data);
-        }
+        const stored = await getStoredEmails(currentUser.id, 'sent');
+        setStoredEmails(stored);
       }
     } catch (error) {
       console.error('Error sending email:', error);
+      toast.error('Ошибка отправки письма');
     } finally {
       setComposeOpen(false);
       setNewEmail({ recipient: "", subject: "", content: "" });
@@ -291,11 +315,20 @@ const MailPage = () => {
   };
 
   // Filter emails based on search term
-  const filteredEmails = emails.filter(email =>
-    email.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    email.sender.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    email.content.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredEmails = activeFolder === 'sent' 
+    ? storedEmails.filter(email =>
+        email.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        email.to.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        email.content.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : emails.filter(email =>
+        email.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        email.sender.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        email.content.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+
+  const isViewingStoredEmail = selectedStoredEmail !== null;
+  const displayedEmail = selectedStoredEmail || selectedEmail;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -328,55 +361,71 @@ const MailPage = () => {
 
         {/* Email List and Detail View */}
         <div className="flex-1 flex flex-col">
-          {selectedEmail ? (
+          {displayedEmail ? (
             // Email Detail View
             <div className="flex-1 flex flex-col">
               <div className="p-4 border-b flex justify-between items-center">
-                <Button variant="outline" onClick={() => setSelectedEmail(null)}>
+                <Button variant="outline" onClick={() => {
+                  setSelectedEmail(null);
+                  setSelectedStoredEmail(null);
+                }}>
                   <ArrowLeft className="h-4 w-4 mr-2" />
                   Назад
                 </Button>
-                <div className="flex gap-2">
-                  {activeFolder !== 'archive' && (
-                    <Button 
-                      variant="outline" 
-                      onClick={() => {
-                        moveToFolder(selectedEmail, 'archive');
-                        setSelectedEmail(null);
-                      }}
-                    >
-                      <Archive className="h-4 w-4 mr-2" />
-                      Архивировать
-                    </Button>
-                  )}
-                  {activeFolder !== 'trash' && (
-                    <Button 
-                      variant="outline"
-                      onClick={() => {
-                        moveToFolder(selectedEmail, 'trash');
-                        setSelectedEmail(null);
-                      }}
-                    >
-                      <Trash className="h-4 w-4 mr-2" />
-                      Удалить
-                    </Button>
-                  )}
-                </div>
+                {!isViewingStoredEmail && selectedEmail && (
+                  <div className="flex gap-2">
+                    {activeFolder !== 'archive' && (
+                      <Button 
+                        variant="outline" 
+                        onClick={() => {
+                          moveToFolder(selectedEmail, 'archive');
+                          setSelectedEmail(null);
+                        }}
+                      >
+                        <Archive className="h-4 w-4 mr-2" />
+                        Архивировать
+                      </Button>
+                    )}
+                    {activeFolder !== 'trash' && (
+                      <Button 
+                        variant="outline"
+                        onClick={() => {
+                          moveToFolder(selectedEmail, 'trash');
+                          setSelectedEmail(null);
+                        }}
+                      >
+                        <Trash className="h-4 w-4 mr-2" />
+                        Удалить
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
               
               <div className="p-6 overflow-y-auto flex-1">
-                <h2 className="text-2xl font-bold mb-4">{selectedEmail.subject}</h2>
+                <h2 className="text-2xl font-bold mb-4">
+                  {isViewingStoredEmail ? selectedStoredEmail!.subject : selectedEmail!.subject}
+                </h2>
                 <div className="flex justify-between items-center mb-6">
                   <div>
-                    <p className="font-medium">От: {selectedEmail.sender}</p>
-                    <p className="text-sm text-muted-foreground">Кому: {selectedEmail.recipient}</p>
+                    <p className="font-medium">
+                      От: {isViewingStoredEmail ? selectedStoredEmail!.from : selectedEmail!.sender}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Кому: {isViewingStoredEmail ? selectedStoredEmail!.to : selectedEmail!.recipient}
+                    </p>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {new Date(selectedEmail.created_at).toLocaleString()}
+                    {isViewingStoredEmail 
+                      ? formatDate(selectedStoredEmail!.timestamp)
+                      : new Date(selectedEmail!.created_at).toLocaleString()
+                    }
                   </p>
                 </div>
                 <div className="border-t pt-6">
-                  <p className="whitespace-pre-wrap">{selectedEmail.content}</p>
+                  <p className="whitespace-pre-wrap">
+                    {isViewingStoredEmail ? selectedStoredEmail!.content : selectedEmail!.content}
+                  </p>
                 </div>
               </div>
             </div>
@@ -402,37 +451,77 @@ const MailPage = () => {
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#33C3F0]"></div>
                   </div>
                 ) : filteredEmails.length > 0 ? (
-                  filteredEmails.map((email) => (
-                    <div
-                      key={email.id}
-                      className={`border-b px-4 py-3 flex items-center cursor-pointer transition-colors ${
-                        email.is_read ? "" : "bg-accent/30 font-medium"
-                      } hover:bg-accent/50`}
-                      onClick={() => {
-                        markAsRead(email);
-                        setSelectedEmail(email);
-                      }}
-                    >
-                      <div className="mr-4">
-                        <Avatar>
-                          <AvatarFallback className="bg-secondary">
-                            {email.sender[0].toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between">
-                          <p className="truncate">{activeFolder === 'sent' ? `Кому: ${email.recipient}` : email.sender}</p>
-                          <p className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{formatDate(email.created_at)}</p>
+                  activeFolder === 'sent' ? (
+                    // Render stored emails for sent folder
+                    storedEmails.filter(email =>
+                      email.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      email.to.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      email.content.toLowerCase().includes(searchTerm.toLowerCase())
+                    ).map((email, index) => (
+                      <div
+                        key={`stored-${index}`}
+                        className="border-b px-4 py-3 flex items-center cursor-pointer transition-colors hover:bg-accent/50"
+                        onClick={() => setSelectedStoredEmail(email)}
+                      >
+                        <div className="mr-4">
+                          <Avatar>
+                            <AvatarFallback className="bg-secondary">
+                              {email.to[0].toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
                         </div>
-                        <p className="truncate font-medium">{email.subject}</p>
-                        <p className="text-sm text-muted-foreground truncate">{email.content}</p>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between">
+                            <p className="truncate">Кому: {email.to}</p>
+                            <p className="text-xs text-muted-foreground ml-2 whitespace-nowrap">
+                              {formatDate(email.timestamp)}
+                            </p>
+                          </div>
+                          <p className="truncate font-medium">{email.subject}</p>
+                          <p className="text-sm text-muted-foreground truncate">{email.content}</p>
+                        </div>
                       </div>
-                      {!email.is_read && (
-                        <div className="ml-2 w-2 h-2 bg-[#33C3F0] rounded-full"></div>
-                      )}
-                    </div>
-                  ))
+                    ))
+                  ) : (
+                    // Render regular emails for other folders
+                    emails.filter(email =>
+                      email.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      email.sender.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                      email.content.toLowerCase().includes(searchTerm.toLowerCase())
+                    ).map((email) => (
+                      <div
+                        key={email.id}
+                        className={`border-b px-4 py-3 flex items-center cursor-pointer transition-colors ${
+                          email.is_read ? "" : "bg-accent/30 font-medium"
+                        } hover:bg-accent/50`}
+                        onClick={() => {
+                          markAsRead(email);
+                          setSelectedEmail(email);
+                        }}
+                      >
+                        <div className="mr-4">
+                          <Avatar>
+                            <AvatarFallback className="bg-secondary">
+                              {email.sender[0].toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between">
+                            <p className="truncate">{email.sender}</p>
+                            <p className="text-xs text-muted-foreground ml-2 whitespace-nowrap">
+                              {formatDate(email.created_at)}
+                            </p>
+                          </div>
+                          <p className="truncate font-medium">{email.subject}</p>
+                          <p className="text-sm text-muted-foreground truncate">{email.content}</p>
+                        </div>
+                        {!email.is_read && (
+                          <div className="ml-2 w-2 h-2 bg-[#33C3F0] rounded-full"></div>
+                        )}
+                      </div>
+                    ))
+                  )
                 ) : (
                   <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                     <Mail className="h-12 w-12 text-muted-foreground/50 mb-2" />
